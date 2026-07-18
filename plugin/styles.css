@@ -962,6 +962,66 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   color: var(--text-faint);
 }
 
+.me-soul-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.me-soul-mic {
+  cursor: pointer;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--ms-hairline-strong);
+  background: color-mix(in srgb, var(--background-primary) 80%, transparent);
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  user-select: none;
+  touch-action: none;
+  transition:
+    transform var(--ms-press),
+    background var(--ms-duration-fast) var(--ms-ease),
+    border-color var(--ms-duration-fast) var(--ms-ease),
+    box-shadow var(--ms-duration-fast) var(--ms-ease),
+    color var(--ms-duration-fast) var(--ms-ease);
+}
+
+.me-soul-mic:hover {
+  color: var(--text-normal);
+  border-color: var(--ms-accent-line);
+  background: var(--ms-accent-soft);
+}
+
+.me-soul-mic:active {
+  transform: scale(0.96);
+}
+
+.me-soul-mic.is-listening {
+  color: var(--text-on-accent, #fff);
+  background: var(--ms-accent);
+  border-color: transparent;
+  box-shadow:
+    0 0 0 4px var(--ms-accent-soft),
+    0 2px 10px color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+  animation: me-soul-mic-pulse 1.2s var(--ms-ease) infinite;
+}
+
+@keyframes me-soul-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--ms-accent-soft); }
+  50% { box-shadow: 0 0 0 8px transparent; }
+}
+
+.me-soul-composer.is-voice-listening .me-soul-input-wrap {
+  border-color: var(--ms-accent-line);
+  box-shadow: 0 0 0 3px var(--ms-accent-soft);
+}
+
 .me-soul-send {
   cursor: pointer;
   width: 34px;
@@ -1000,6 +1060,12 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 .is-busy .me-soul-send {
   background: color-mix(in srgb, var(--text-muted) 70%, var(--interactive-accent));
   box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .me-soul-mic.is-listening {
+    animation: none;
+  }
 }
 
 /* scrollbar refinement inside panel */

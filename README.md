@@ -21,6 +21,7 @@ Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS
 | **Thoughts (思绪)** | Short `:::thought` blocks in the UI |
 | **Memory** | Keyword `wiki/index.md` + optional hybrid embeddings (`bge-m3` etc.) |
 | **Setup wizard** | First run: name your agent, seed **generic** soul templates |
+| **Voice input** | Hold 🎤 → xAI STT (stream / REST) fills the composer |
 
 **No author’s personal persona, API keys, or private vault notes are shipped.**  
 You configure identity and keys after install.

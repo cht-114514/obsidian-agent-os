@@ -31,6 +31,7 @@ import {
   upsertVectorsForPath,
   removeVectorsForPath,
 } from './memory/index-ops.js';
+import { VoiceInputSession, resolveXaiApiKey } from './voice-stt.js';
 import { checkWritePolicy } from './protocol-bridge.js';
 
 /**
@@ -118,12 +119,27 @@ export function mountMeSoulChat(containerEl, ctx) {
     cls: 'me-soul-input',
     attr: {
       rows: '1',
-      placeholder: `跟${agentName}说…   @ 引用笔记 · / 技能 · 粘贴文件入 raw`,
+      placeholder: `跟${agentName}说…   @ 引用笔记 · / 技能 · 粘贴文件入 raw · 按住 🎤`,
     },
   });
   const row = composer.createDiv({ cls: 'me-soul-composer-row' });
   const hintEl = row.createDiv({ cls: 'me-soul-status' });
-  const sendBtn = row.createEl('button', { cls: 'me-soul-send', text: '↑' });
+  const actionsEl = row.createDiv({ cls: 'me-soul-composer-actions' });
+  const micBtn = actionsEl.createEl('button', {
+    cls: 'me-soul-mic',
+    attr: {
+      type: 'button',
+      'aria-label': '按住说话',
+      title: '按住说话（xAI STT）· 松手填入输入框',
+    },
+    text: '🎤',
+  });
+  const sendBtn = actionsEl.createEl('button', { cls: 'me-soul-send', text: '↑' });
+
+  /** @type {VoiceInputSession | null} */
+  let voiceSession = null;
+  let voiceBaseText = '';
+  let voiceListening = false;
 
   function setStatus(t) {
     statusEl.setText(t);
@@ -139,6 +155,121 @@ export function mountMeSoulChat(containerEl, ctx) {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
   }
+
+  function setVoiceUi(on) {
+    voiceListening = on;
+    micBtn.toggleClass('is-listening', on);
+    composer.toggleClass('is-voice-listening', on);
+    shell.toggleClass('is-voice-listening', on);
+  }
+
+  async function startVoice() {
+    if (voiceListening || busy) return;
+    if (plugin.settings.voiceEnabled === false) {
+      notify('语音输入已关闭（设置里可开启）');
+      return;
+    }
+    const apiKey = resolveXaiApiKey(plugin.settings);
+    if (!apiKey) {
+      notify('未找到 xAI API Key：在设置填写，或配置环境变量 XAI_API_KEY');
+      return;
+    }
+
+    voiceBaseText = inputEl.value;
+    const session = new VoiceInputSession({
+      apiKey,
+      language: plugin.settings.voiceLanguage || '',
+      onStatus: (s) => {
+        hintEl.setText(s);
+        if (s.includes('聆听') || s.includes('麦克风')) setStatus('听…');
+      },
+      onPartial: (text) => {
+        const joined = voiceBaseText
+          ? `${voiceBaseText.replace(/\s+$/, '')} ${text}`.trim()
+          : text;
+        inputEl.value = joined;
+        autoGrow();
+      },
+      onError: (err) => {
+        notify(err?.message || String(err));
+        setStatus('就绪');
+        hintEl.setText('');
+      },
+    });
+    voiceSession = session;
+    setVoiceUi(true);
+    try {
+      await session.start();
+    } catch (e) {
+      setVoiceUi(false);
+      voiceSession = null;
+      notify(e?.message || String(e));
+      setStatus('就绪');
+      hintEl.setText('');
+    }
+  }
+
+  async function stopVoice(sendAfter = false) {
+    if (!voiceSession) {
+      setVoiceUi(false);
+      return;
+    }
+    const session = voiceSession;
+    voiceSession = null;
+    try {
+      const text = await session.stop();
+      if (text) {
+        const joined = voiceBaseText
+          ? `${voiceBaseText.replace(/\s+$/, '')} ${text}`.trim()
+          : text;
+        inputEl.value = joined;
+        autoGrow();
+        if (sendAfter && plugin.settings.voiceAutoSend) {
+          // defer so UI settles
+          setTimeout(() => send(), 30);
+        }
+      }
+    } catch (e) {
+      notify(e?.message || String(e));
+    } finally {
+      setVoiceUi(false);
+      setStatus('就绪');
+      hintEl.setText('');
+      inputEl.focus();
+    }
+  }
+
+  function cancelVoice() {
+    if (voiceSession) {
+      voiceSession.cancel();
+      voiceSession = null;
+    }
+    setVoiceUi(false);
+    hintEl.setText('');
+    setStatus('就绪');
+  }
+
+  // Push-to-talk: press & hold
+  micBtn.addEventListener('pointerdown', (ev) => {
+    if (ev.button != null && ev.button !== 0) return;
+    ev.preventDefault();
+    try {
+      micBtn.setPointerCapture(ev.pointerId);
+    } catch {
+      /* */
+    }
+    startVoice();
+  });
+  micBtn.addEventListener('pointerup', (ev) => {
+    ev.preventDefault();
+    stopVoice(false);
+  });
+  micBtn.addEventListener('pointercancel', () => cancelVoice());
+  micBtn.addEventListener('lostpointercapture', () => {
+    if (voiceListening) stopVoice(false);
+  });
+  // Prevent focus steal / context menu noise
+  micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // ---------- chips ----------
   function renderChips() {

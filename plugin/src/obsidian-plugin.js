@@ -251,6 +251,11 @@ export default class MeSoulPlugin extends Plugin {
         embedTopK: 3,
         embedMinScore: 0.28,
         retrieveMode: 'hybrid',
+        // xAI voice STT
+        voiceEnabled: true,
+        voiceLanguage: '', // empty = auto; e.g. en, zh if supported
+        voiceAutoSend: false,
+        xaiApiKey: '',
         skills: [
           'me-digest',
           'me-write-insight',
@@ -433,6 +438,57 @@ class MeSoulSettingTab extends PluginSettingTab {
         t.setValue(!!this.plugin.settings.quiet).onChange(async (v) => {
           this.plugin.settings.quiet = v;
           this.plugin.controller.setQuiet(v);
+          await this.plugin.saveSettings();
+        })
+      );
+
+    containerEl.createEl('h3', { text: '语音输入（xAI STT）' });
+    containerEl.createEl('p', {
+      text: '按住输入栏旁 🎤 说话，松手填入文字。优先流式 WebSocket，失败则整段 REST。Key 可填 API Key，或自动读 XAI_API_KEY / OpenClaw / ~/.grok/auth。',
+      cls: 'setting-item-description',
+    });
+
+    new Setting(containerEl)
+      .setName('启用语音输入')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.voiceEnabled !== false).onChange(async (v) => {
+          this.plugin.settings.voiceEnabled = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('xAI API Key')
+      .setDesc('console.x.ai 的 Key；用于 STT。勿提交 git')
+      .addText((t) => {
+        t.inputEl.type = 'password';
+        t.setPlaceholder('xai-… 或留空自动探测')
+          .setValue(this.plugin.settings.xaiApiKey || '')
+          .onChange(async (v) => {
+            this.plugin.settings.xaiApiKey = v.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('语音语言（可选）')
+      .setDesc('如 en；留空自动。格式化用；中文听写请实测')
+      .addText((t) =>
+        t
+          .setPlaceholder('en')
+          .setValue(this.plugin.settings.voiceLanguage || '')
+          .onChange(async (v) => {
+            this.plugin.settings.voiceLanguage = v.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('松手后自动发送')
+      .setDesc('关闭则只填入输入框，由你确认再发')
+      .addToggle((t) =>
+        t.setValue(!!this.plugin.settings.voiceAutoSend).onChange(async (v) => {
+          this.plugin.settings.voiceAutoSend = v;
           await this.plugin.saveSettings();
         })
       );
