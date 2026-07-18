@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local Obsidian plugin data (API keys, personal settings)
+plugin/data.json
+**/data.json
+
+# Personal / machine-local
+skills/env.sh
+.obsidian/
+
+# Optional local install target noise
+*.tgz
+coverage/

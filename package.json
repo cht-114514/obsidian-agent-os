@@ -1,0 +1,36 @@
+{
+  "name": "me-soul",
+  "version": "0.1.1-beta",
+  "private": false,
+  "description": "Me.Soul (beta): Vault-native Obsidian agent + soul loops (thoughts, insights, care). Inspired by Cola; not affiliated.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USER/me-soul.git"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "agent",
+    "openclaw",
+    "grok",
+    "rag",
+    "second-brain"
+  ],
+  "workspaces": [
+    "packages/*",
+    "plugin"
+  ],
+  "scripts": {
+    "test": "npm run test -w @me-soul/protocol && npm run test -w me-soul-plugin && node --test skills/tests/*.test.js",
+    "test:protocol": "npm run test -w @me-soul/protocol",
+    "test:plugin": "npm run test -w me-soul-plugin",
+    "build:plugin": "npm run build -w me-soul-plugin",
+    "skill:digest": "node skills/me-digest/run.mjs",
+    "skill:insight": "node skills/me-write-insight/run.mjs",
+    "skill:care": "node skills/me-care-check/run.mjs",
+    "skill:apply-pending": "node skills/me-apply-pending/run.mjs",
+    "skill:apply-insight": "node skills/me-apply-insight/run.mjs"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "me-soul",
+  "name": "Me.Soul",
+  "version": "0.1.1",
+  "minAppVersion": "1.5.0",
+  "description": "Beta: vault-native agent shell with soul loops (thoughts/insights/care), digest confirm, optional embeddings.",
+  "author": "Me.Soul contributors",
+  "authorUrl": "https://github.com/YOUR_USER/me-soul",
+  "isDesktopOnly": false
+}
