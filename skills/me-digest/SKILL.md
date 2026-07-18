@@ -16,6 +16,6 @@ description: Grok 编译笔记为待审 wiki；Accept 定稿，Reject 删除 wik
 
 ## UI
 
-在 Me.Soul 对话台：`/me-digest` + `@笔记` 发送。
+在 Obsidian Agent OS 对话台：`/me-digest` + `@笔记` 发送。
 
-引擎必须为 **Grok Build**（设置 → Me.Soul → 引擎）。
+引擎必须为 **Grok Build**（设置 → Obsidian Agent OS → 引擎）。

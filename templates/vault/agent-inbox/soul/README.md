@@ -1,6 +1,6 @@
 # agent-inbox/soul
 
-Local soul store for Me.Soul (agent-owned; always human-readable).
+Local soul store for Obsidian Agent OS (agent-owned; always human-readable).
 
 | Path | Meaning |
 |------|---------|

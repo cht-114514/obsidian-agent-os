@@ -1,5 +1,5 @@
 /**
- * Me.Soul fence protocol parser.
+ * Obsidian Agent OS fence protocol parser.
  * Shipped pure module — no Obsidian / OpenClaw deps.
  *
  * Supports:

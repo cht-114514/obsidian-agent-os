@@ -2,7 +2,7 @@
 title: Communication style
 type: soul-style
 updated: 2026-07-18
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # STYLE

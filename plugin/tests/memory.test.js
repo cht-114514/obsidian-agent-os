@@ -15,7 +15,7 @@ import {
 describe('inject', () => {
   it('buildTurnPrompt includes soul sections and user message', () => {
     const p = buildTurnPrompt({
-      identity: '# ID\nMe.Soul',
+      identity: '# ID\nObsidian Agent OS',
       soul: '# SOUL\n边界：不乱写四主区',
       profile: '# Profile\n偏好：先诊断',
       style: '# Style\n简洁',

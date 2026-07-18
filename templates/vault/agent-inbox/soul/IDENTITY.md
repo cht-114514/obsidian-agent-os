@@ -2,7 +2,7 @@
 title: Agent identity
 type: soul-identity
 updated: 2026-07-18
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # IDENTITY

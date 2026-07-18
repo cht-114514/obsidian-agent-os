@@ -1,5 +1,5 @@
 /**
- * Shared vault I/O for Me.Soul skills.
+ * Shared vault I/O for Obsidian Agent OS skills.
  * Enforces agent-inbox-only writes unless pending is approved.
  */
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';

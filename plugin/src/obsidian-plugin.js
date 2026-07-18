@@ -1,5 +1,5 @@
 /**
- * Me.Soul Obsidian plugin — homepage chat shell + sidebar view.
+ * Obsidian Agent OS Obsidian plugin — homepage chat shell + sidebar view.
  */
 import {
   Plugin,
@@ -31,7 +31,7 @@ class MeSoulView extends ItemView {
   }
 
   getDisplayText() {
-    return 'Me.Soul';
+    return 'Obsidian Agent OS';
   }
 
   getIcon() {
@@ -105,19 +105,19 @@ export default class MeSoulPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE, (leaf) => new MeSoulView(leaf, this));
 
-    this.addRibbonIcon('sparkles', 'Me.Soul', () => this.activateView());
+    this.addRibbonIcon('sparkles', 'Obsidian Agent OS', () => this.activateView());
     this.addCommand({
-      id: 'me-soul-open',
-      name: 'Open Me.Soul chat',
+      id: 'obsidian-agent-os-open',
+      name: 'Open Obsidian Agent OS chat',
       callback: () => this.activateView(),
     });
     this.addCommand({
-      id: 'me-soul-open-home',
-      name: 'Open home (Me.Soul)',
+      id: 'obsidian-agent-os-open-home',
+      name: 'Open home (Obsidian Agent OS)',
       callback: () => this.openHome(),
     });
     this.addCommand({
-      id: 'me-soul-toggle-quiet',
+      id: 'obsidian-agent-os-toggle-quiet',
       name: 'Toggle Quiet (今日少说话)',
       callback: async () => {
         this.controller.setQuiet(!this.controller.settings.quiet);
@@ -127,16 +127,16 @@ export default class MeSoulPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: 'me-soul-setup',
+      id: 'obsidian-agent-os-setup',
       name: 'Run setup wizard (人格 / 模板)',
       callback: () => this.openSetup(),
     });
     this.addCommand({
-      id: 'me-soul-seed-templates',
+      id: 'obsidian-agent-os-seed-templates',
       name: 'Seed soul templates (不覆盖已有)',
       callback: async () => {
         await seedVaultScaffold(this.app, {
-          agentName: this.settings.agentName || 'Me.Soul',
+          agentName: this.settings.agentName || 'Agent',
           userName: this.settings.userName || 'User',
           agentVibe: this.settings.agentVibe || '',
           homePath: this.settings.homePath || '00-首页.md',
@@ -239,7 +239,7 @@ export default class MeSoulPlugin extends Plugin {
         quiet: false,
         openHomeOnStart: true,
         setupDone: false,
-        agentName: 'Me.Soul',
+        agentName: 'Agent',
         userName: '',
         agentVibe: '简洁、温暖、直接；像合伙人不是客服',
         homePath: '00-首页.md',
@@ -296,7 +296,7 @@ class MeSoulSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Me.Soul' });
+    containerEl.createEl('h2', { text: 'Obsidian Agent OS' });
     containerEl.createEl('p', {
       text: '开源测试版 (beta)。人格与密钥只存在本 vault 的插件 data.json，不会随源码分发。',
       cls: 'setting-item-description',
@@ -313,12 +313,12 @@ class MeSoulSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Agent 显示名')
-      .setDesc('聊天标题（如 Me.Soul / 你的自定义名）')
+      .setDesc('聊天标题（如 Obsidian Agent OS / 你的自定义名）')
       .addText((t) =>
         t
-          .setValue(this.plugin.settings.agentName || 'Me.Soul')
+          .setValue(this.plugin.settings.agentName || 'Agent')
           .onChange(async (v) => {
-            this.plugin.settings.agentName = v.trim() || 'Me.Soul';
+            this.plugin.settings.agentName = v.trim() || 'Agent';
             await this.plugin.saveSettings();
           })
       );
@@ -419,7 +419,7 @@ class MeSoulSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('启动打开首页')
-      .setDesc('Layout ready 时打开 00-首页.md（Me.Soul 对话台）')
+      .setDesc('Layout ready 时打开 00-首页.md（Obsidian Agent OS 对话台）')
       .addToggle((t) =>
         t.setValue(!!this.plugin.settings.openHomeOnStart).onChange(async (v) => {
           this.plugin.settings.openHomeOnStart = v;

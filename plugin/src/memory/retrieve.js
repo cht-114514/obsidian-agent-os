@@ -91,7 +91,7 @@ export function serializeWikiIndex(items) {
     'title: Wiki index',
     'type: wiki-index',
     `updated: ${new Date().toISOString().slice(0, 10)}`,
-    'managed_by: me-soul',
+    'managed_by: obsidian-agent-os',
     '---',
     '',
     '# Wiki Index',

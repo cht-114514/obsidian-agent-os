@@ -65,7 +65,7 @@ export function buildTurnPrompt(pack) {
   const caps = { ...DEFAULT_CAPS, ...(pack.caps || {}) };
   const parts = [];
 
-  parts.push('# Me.Soul 强制上下文（每轮注入，勿忽略）');
+  parts.push('# Obsidian Agent OS 强制上下文（每轮注入，勿忽略）');
   parts.push(
     '以下 IDENTITY / SOUL / PROFILE / STYLE 是你的稳定人格与用户模型。回答时遵守边界与偏好。'
   );

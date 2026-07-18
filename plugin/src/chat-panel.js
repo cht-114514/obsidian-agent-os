@@ -1,5 +1,5 @@
 /**
- * Me.Soul chat panel — streaming ACP (Grok Build) + local me-* skills.
+ * Obsidian Agent OS chat panel — streaming ACP (Grok Build) + local me-* skills.
  *
  * Interaction model (obsidian-cc inspired):
  *   @  → vault-wide fuzzy file search → reference chips
@@ -69,7 +69,7 @@ export function mountMeSoulChat(containerEl, ctx) {
   const brand = header.createDiv({ cls: 'me-soul-brand' });
   const soulDot = brand.createDiv({ cls: 'me-soul-dot' });
   const brandText = brand.createDiv({ cls: 'me-soul-brand-text' });
-  const agentName = plugin.settings.agentName || 'Me.Soul';
+  const agentName = plugin.settings.agentName || 'Agent';
   brandText.createDiv({ cls: 'me-soul-title', text: agentName });
   const statusEl = brandText.createDiv({ cls: 'me-soul-subtitle', text: '就绪' });
 
@@ -644,7 +644,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
 
     if (plugin.settings.engine === 'openclaw') {
-      msg.fail('digest 需要 Grok Build 内核。请在 Me.Soul 设置里把引擎改为 Grok Build。');
+      msg.fail('digest 需要 Grok Build 内核。请在 Obsidian Agent OS 设置里把引擎改为 Grok Build。');
       return;
     }
 
@@ -805,7 +805,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
 
     const prompt = [
-      '你是 Me.Soul 记忆清洗器。根据候选条目，决定如何升格进 Agent 人格文件。',
+      '你是 Obsidian Agent OS 记忆清洗器。根据候选条目，决定如何升格进 Agent 人格文件。',
       '只输出 JSON（不要 markdown 围栏），格式：',
       '{ "updates": [ { "target": "profile"|"style"|"soul", "title": "...", "text": "...", "sources": ["path"] } ], "skipped": [ { "path": "...", "reason": "..." } ] }',
       '规则：',

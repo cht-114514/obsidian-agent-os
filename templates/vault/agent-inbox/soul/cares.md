@@ -2,7 +2,7 @@
 title: Care rules
 type: soul-cares
 updated: 2026-07-18
-managed_by: me-soul
+managed_by: obsidian-agent-os
 intensity: cola-strong
 daily_cap: 3
 ---

@@ -6,12 +6,12 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outDir = join(__dirname, 'dist');
 
-// Optional: OBSIDIAN_PLUGIN_DIR=/path/to/vault/.obsidian/plugins/me-soul
+// Optional: OBSIDIAN_PLUGIN_DIR=/path/to/vault/.obsidian/plugins/obsidian-agent-os
 // Fallback: walk up to a vault that already has .obsidian/plugins (dev convenience)
 function resolveInstallDir() {
   if (process.env.OBSIDIAN_PLUGIN_DIR) return process.env.OBSIDIAN_PLUGIN_DIR;
   // plugin/ → me-soul → agent-inbox → vault
-  const candidate = join(__dirname, '../../../.obsidian/plugins/me-soul');
+  const candidate = join(__dirname, '../../../.obsidian/plugins/obsidian-agent-os');
   if (existsSync(join(__dirname, '../../../.obsidian'))) return candidate;
   return null;
 }
@@ -47,15 +47,21 @@ if (!/module\.exports\s*=/.test(bundle)) {
 copyFileSync(join(__dirname, 'manifest.json'), join(outDir, 'manifest.json'));
 copyFileSync(join(__dirname, 'styles.css'), join(outDir, 'styles.css'));
 
+function installTo(dir) {
+  if (!dir) return;
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(join(outDir, 'main.js'), join(dir, 'main.js'));
+  copyFileSync(join(__dirname, 'manifest.json'), join(dir, 'manifest.json'));
+  copyFileSync(join(__dirname, 'styles.css'), join(dir, 'styles.css'));
+  console.log('installed →', dir);
+}
+
 const vaultPlugin = resolveInstallDir();
-if (vaultPlugin) {
-  mkdirSync(vaultPlugin, { recursive: true });
-  copyFileSync(join(outDir, 'main.js'), join(vaultPlugin, 'main.js'));
-  copyFileSync(join(__dirname, 'manifest.json'), join(vaultPlugin, 'manifest.json'));
-  copyFileSync(join(__dirname, 'styles.css'), join(vaultPlugin, 'styles.css'));
-  console.log('installed →', vaultPlugin);
-} else {
-  console.log('no vault plugin dir (set OBSIDIAN_PLUGIN_DIR to auto-install)');
+installTo(vaultPlugin);
+// Dev convenience: also refresh legacy folder name if present
+const legacy = join(__dirname, '../../../.obsidian/plugins/me-soul');
+if (existsSync(legacy) && legacy !== vaultPlugin) {
+  installTo(legacy);
 }
 
 console.log('built →', outDir);

@@ -1,6 +1,6 @@
 # Vault constitution (minimal)
 
-This file is injected (truncated) into Me.Soul turns. Replace with your own rules.
+This file is injected (truncated) into Obsidian Agent OS turns. Replace with your own rules.
 
 ## Ownership
 

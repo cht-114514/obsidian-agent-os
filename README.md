@@ -1,12 +1,14 @@
-# Me.Soul
+# Obsidian Agent OS
 
 > **Public beta / 测试版** — not a 1.0 release. APIs and vault layout may change.
 
-**Vault-native agent shell** for [Obsidian](https://obsidian.md): chat UI, soul loops (thoughts / insights / care), digest + confirm gates, optional embedding memory, Grok Build (ACP) or OpenClaw gateway.
+**Vault-native agent operating system** for [Obsidian](https://obsidian.md): chat UI, soul loops (thoughts / insights / care), digest + confirm gates, optional embedding memory, Grok Build (ACP) or OpenClaw gateway.
 
 ```
-Vault (Markdown body)  ←→  Me.Soul plugin (face)  ←→  Grok / OpenClaw (nerve)
+Vault (Markdown body)  ←→  Obsidian Agent OS (face)  ←→  Grok / OpenClaw (nerve)
 ```
+
+Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS**.
 
 ## Features (beta)
 
@@ -26,7 +28,7 @@ You configure identity and keys after install.
 ## Credits / 创意致谢
 
 Soul-loop product ideas (observable thoughts, user insights, proactive care) are **inspired by Cola** (KOLLA / ColaOS). See [NOTICE.md](./NOTICE.md).  
-Me.Soul is an independent open-source project and is **not** affiliated with Cola.
+Obsidian Agent OS is an independent open-source project and is **not** affiliated with Cola.
 
 ## Requirements
 
@@ -37,8 +39,8 @@ Me.Soul is an independent open-source project and is **not** affiliated with Col
 ## Install (from source)
 
 ```bash
-git clone https://github.com/<you>/me-soul.git
-cd me-soul
+git clone https://github.com/cht-114514/obsidian-agent-os.git
+cd obsidian-agent-os
 npm install
 npm test
 npm run build:plugin
@@ -47,32 +49,32 @@ npm run build:plugin
 Copy `plugin/dist/*` into your vault:
 
 ```text
-<vault>/.obsidian/plugins/me-soul/
+<vault>/.obsidian/plugins/obsidian-agent-os/
   main.js
   manifest.json
   styles.css
 ```
 
-Or auto-install into a vault:
+Or auto-install:
 
 ```bash
-OBSIDIAN_PLUGIN_DIR="/path/to/vault/.obsidian/plugins/me-soul" npm run build:plugin
+OBSIDIAN_PLUGIN_DIR="/path/to/vault/.obsidian/plugins/obsidian-agent-os" npm run build:plugin
 ```
 
-Then enable **Me.Soul** in Obsidian → Community plugins (or installed plugins).
+Enable **Obsidian Agent OS** under Obsidian → Settings → Community plugins.
+
+> **Note:** Homepage embed still uses the code fence ` ```me-soul ` for compatibility. CSS classes keep a `me-soul-*` prefix internally.
 
 ## First run
 
-1. Command palette → **Me.Soul: Run setup wizard**
+1. Command palette → **Obsidian Agent OS: Run setup wizard**
 2. Set agent display name + optional vibe
 3. Seed templates → creates `agent-inbox/soul/*`, home note, wiki folders
 4. Edit `agent-inbox/soul/SOUL.md` / `profile.md` to taste
 5. Settings → engine (Grok / OpenClaw), optional Embed API key
-6. Open home note with ````me-soul` block (created by setup)
+6. Open the home note with a ` ```me-soul ` block
 
 ### Memory migration (manual, beta)
-
-There is no one-click import from other products yet. Typical path:
 
 1. Put existing notes under human zones or `agent-inbox/`
 2. `/me-digest @path` for knowledge wiki
@@ -85,8 +87,8 @@ There is no one-click import from other products yet. Typical path:
 |------|------|
 | `plugin/` | Obsidian plugin source → `plugin/dist/` |
 | `packages/protocol` | Fence parser, confirm SM, write policy, care policy |
-| `skills/*` | CLI skills (digest, insight, care, reindex helpers) |
-| `templates/vault/` | Generic vault seed files (also embedded in setup) |
+| `skills/*` | CLI skills (`me-digest`, insight, care, …) |
+| `templates/vault/` | Generic vault seed files |
 | `NOTICE.md` | Cola credit + beta disclaimer |
 
 Default write policy: free write under `agent-inbox/`; human zones  
@@ -100,12 +102,10 @@ npm test
 npm run build:plugin
 ```
 
-## Versioning & roadmap
+## Versioning
 
-- **0.1.x** — public beta; expect rough edges
-- Later: installable release, polished onboarding, formal 1.0 if the project sticks
-
-Contributions welcome once issues/PRs are opened on the GitHub repo.
+- **0.1.x** — public beta
+- Later: polish, Community Plugin store packaging if/when ready
 
 ## License
 

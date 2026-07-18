@@ -2,7 +2,7 @@
 title: Agent soul / voice
 type: soul-voice
 updated: 2026-07-18
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # SOUL

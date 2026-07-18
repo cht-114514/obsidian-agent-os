@@ -1,5 +1,5 @@
 /**
- * Me.Soul Obsidian plugin entry (desktop).
+ * Obsidian Agent OS Obsidian plugin entry (desktop).
  * Pure logic is unit-testable without Obsidian runtime.
  */
 import { renderAgentMessage, formatSkillMenu, composeWithRefs } from './renderer.js';

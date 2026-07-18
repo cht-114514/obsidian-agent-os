@@ -1,5 +1,5 @@
 {
-  "name": "me-soul-plugin",
+  "name": "obsidian-agent-os-plugin",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,6 @@
     "esbuild": "^0.25.0"
   },
   "dependencies": {
-    "@me-soul/protocol": "0.1.0"
+    "@obsidian-agent-os/protocol": "0.1.0"
   }
 }

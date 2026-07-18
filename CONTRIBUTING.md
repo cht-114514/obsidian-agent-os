@@ -1,6 +1,6 @@
 # Contributing
 
-Me.Soul is a **beta**. Small, focused PRs are easiest to review.
+Obsidian Agent OS is a **beta**. Small, focused PRs are easiest to review.
 
 ## Dev
 

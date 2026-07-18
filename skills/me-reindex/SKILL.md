@@ -18,7 +18,7 @@ description: 重建 agent-inbox/wiki/index.md（关键词）与 vectors.jsonl（
    - 写入 **向量索引** → `agent-inbox/wiki/vectors.jsonl`  
    - 内容 hash 未变则复用旧向量，避免重复计费  
 
-## 配置（Me.Soul 设置 → 记忆检索）
+## 配置（Obsidian Agent OS 设置 → 记忆检索）
 
 | 项 | 默认 |
 |----|------|

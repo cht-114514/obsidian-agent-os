@@ -10,7 +10,7 @@ export const DEFAULT_TEMPLATES = {
   'agent-inbox/soul/IDENTITY.md': `---
 title: Agent identity
 type: soul-identity
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # IDENTITY
@@ -30,7 +30,7 @@ managed_by: me-soul
   'agent-inbox/soul/SOUL.md': `---
 title: Agent soul / voice
 type: soul-voice
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # SOUL
@@ -56,7 +56,7 @@ Stable preferences land via **insight / soul-promote** into profile and this fil
   'agent-inbox/soul/profile.md': `---
 title: User profile model
 type: soul-profile
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # PROFILE
@@ -82,7 +82,7 @@ Stable model of **{{USER_NAME}}**. Update only via confirmed insights / soul-pro
   'agent-inbox/soul/style.md': `---
 title: Communication style
 type: soul-style
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # STYLE
@@ -94,7 +94,7 @@ managed_by: me-soul
   'agent-inbox/soul/cares.md': `---
 title: Care rules
 type: soul-cares
-managed_by: me-soul
+managed_by: obsidian-agent-os
 intensity: cola-strong
 daily_cap: 3
 ---
@@ -116,12 +116,12 @@ daily_cap: 3
 `,
   'agent-inbox/soul/README.md': `# agent-inbox/soul
 
-Me.Soul local soul store. Edit freely. Open-source beta ships **templates only**.
+Obsidian Agent OS local soul store. Edit freely. Open-source beta ships **templates only**.
 `,
   'agent-inbox/wiki/index.md': `---
 title: Wiki index
 type: wiki-index
-managed_by: me-soul
+managed_by: obsidian-agent-os
 ---
 
 # Wiki Index
@@ -191,7 +191,7 @@ export async function writeVaultFile(app, rel, content, opts = {}) {
  */
 export async function seedVaultScaffold(app, opts = {}) {
   const vars = {
-    AGENT_NAME: opts.agentName || 'Me.Soul',
+    AGENT_NAME: opts.agentName || 'Agent',
     USER_NAME: opts.userName || 'User',
     AGENT_VIBE: opts.agentVibe || 'concise, warm, direct; partner not servant',
   };
@@ -226,7 +226,7 @@ export async function seedVaultScaffold(app, opts = {}) {
     const homeBody = `---
 title: Home
 type: home
-managed_by: me-soul
+managed_by: obsidian-agent-os
 cssclasses:
   - me-soul-home
 ---
@@ -234,8 +234,8 @@ cssclasses:
 \`\`\`me-soul
 \`\`\`
 
-> [!me-soul-fallback] Me.Soul not loaded
-> Enable community plugin **Me.Soul**, then reopen this note.
+> [!me-soul-fallback] Obsidian Agent OS not loaded
+> Enable community plugin **Obsidian Agent OS**, then reopen this note.
 `;
     results.push(
       await writeVaultFile(app, homePath, homeBody, { overwrite: !!opts.overwrite })
@@ -266,7 +266,7 @@ export class MeSoulSetupModal extends Modal {
     super(app);
     this.plugin = plugin;
     this.onDone = opts.onDone;
-    this.agentName = plugin.settings.agentName || 'Me.Soul';
+    this.agentName = plugin.settings.agentName || 'Agent';
     this.userName = plugin.settings.userName || '';
     this.agentVibe = plugin.settings.agentVibe || '简洁、温暖、直接；像合伙人不是客服';
     this.homePath = plugin.settings.homePath || '00-首页.md';
@@ -276,7 +276,7 @@ export class MeSoulSetupModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h2', { text: 'Me.Soul 初始配置（测试版）' });
+    contentEl.createEl('h2', { text: 'Obsidian Agent OS 初始配置（测试版）' });
     contentEl.createEl('p', {
       text: '开源 beta 不自带作者人格。在这里命名你的 Agent，并写入通用 soul 模板（可稍后在 agent-inbox/soul/ 改）。',
       cls: 'setting-item-description',
@@ -287,7 +287,7 @@ export class MeSoulSetupModal extends Modal {
       .setDesc('聊天标题与 IDENTITY 中的名字')
       .addText((t) =>
         t.setValue(this.agentName).onChange((v) => {
-          this.agentName = v.trim() || 'Me.Soul';
+          this.agentName = v.trim() || 'Agent';
         })
       );
 
