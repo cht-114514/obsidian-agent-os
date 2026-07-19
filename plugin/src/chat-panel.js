@@ -32,6 +32,17 @@ import {
   removeVectorsForPath,
 } from './memory/index-ops.js';
 import { VoiceInputSession, resolveXaiApiKey } from './voice-stt.js';
+import {
+  createActiveNoteState,
+  onMarkdownFocus,
+  setActiveNoteMode,
+  getEffectiveActivePath,
+  mergeActiveNoteChips,
+  composeWithContext,
+  resolveDigestSourcePath,
+  markdownPathFromLeaf,
+  DEFAULT_ACTIVE_NOTE_MAX_CHARS,
+} from './active-note.js';
 import { checkWritePolicy } from './protocol-bridge.js';
 
 /**
@@ -102,6 +113,156 @@ export function mountMeSoulChat(containerEl, ctx) {
     appendWelcome();
     notify('新会话已开启');
   };
+
+  // ---------- active note context ----------
+  const activeNoteEnabled = () => plugin.settings.activeNoteContext !== false;
+  /** Seed path: live active md, or last pinned path from settings */
+  const seedActivePath = (() => {
+    try {
+      const af = app.workspace.getActiveFile?.();
+      if (af?.extension === 'md') return af.path;
+    } catch {
+      /* */
+    }
+    return plugin.settings.activeNotePinnedPath || null;
+  })();
+  /** @type {import('./active-note.js').ActiveNoteState} */
+  let activeNoteState = createActiveNoteState({ mode: 'follow' });
+  if (seedActivePath) {
+    activeNoteState = onMarkdownFocus(activeNoteState, seedActivePath);
+  }
+  const savedMode = plugin.settings.activeNoteMode || 'follow';
+  if (savedMode === 'pin') {
+    activeNoteState = setActiveNoteMode(activeNoteState, 'pin', {
+      pinPath: plugin.settings.activeNotePinnedPath || seedActivePath,
+    });
+  } else if (savedMode === 'off') {
+    activeNoteState = setActiveNoteMode(activeNoteState, 'off');
+  }
+
+  const contextStrip = shell.createDiv({ cls: 'me-soul-context-strip' });
+  const contextLabel = contextStrip.createDiv({ cls: 'me-soul-context-label' });
+  const contextPathEl = contextStrip.createDiv({
+    cls: 'me-soul-context-path',
+    attr: { title: '点击打开笔记' },
+  });
+  const contextModes = contextStrip.createDiv({ cls: 'me-soul-context-modes' });
+  const btnFollow = contextModes.createEl('button', {
+    cls: 'me-soul-context-btn',
+    text: '跟随',
+    attr: { type: 'button', title: '跟随当前打开的笔记' },
+  });
+  const btnPin = contextModes.createEl('button', {
+    cls: 'me-soul-context-btn',
+    text: '固定',
+    attr: { type: 'button', title: '固定当前笔记，换页不变' },
+  });
+  const btnOff = contextModes.createEl('button', {
+    cls: 'me-soul-context-btn',
+    text: '关闭',
+    attr: { type: 'button', title: '本会话不自动附带' },
+  });
+
+  function paintContextStrip() {
+    if (!activeNoteEnabled()) {
+      contextStrip.addClass('is-disabled');
+      contextLabel.setText('当前笔记');
+      contextPathEl.setText('（设置中已关闭自动上下文）');
+      btnFollow.removeClass('is-on');
+      btnPin.removeClass('is-on');
+      btnOff.addClass('is-on');
+      return;
+    }
+    contextStrip.removeClass('is-disabled');
+    const path = getEffectiveActivePath(activeNoteState);
+    const mode = activeNoteState.mode;
+    btnFollow.toggleClass('is-on', mode === 'follow');
+    btnPin.toggleClass('is-on', mode === 'pin');
+    btnOff.toggleClass('is-on', mode === 'off');
+    if (mode === 'off') {
+      contextLabel.setText('当前笔记 · 关');
+      contextPathEl.setText('发送时不自动附带');
+      return;
+    }
+    contextLabel.setText(mode === 'pin' ? '当前笔记 · 固定' : '当前笔记 · 自动');
+    if (path) {
+      contextPathEl.setText(path);
+      contextPathEl.setAttr('title', path);
+      contextStrip.addClass('has-note');
+      contextStrip.addClass('is-flash');
+      window.setTimeout(() => contextStrip.removeClass('is-flash'), 280);
+    } else {
+      contextPathEl.setText('（打开一篇 Markdown 笔记）');
+      contextStrip.removeClass('has-note');
+    }
+  }
+
+  function syncActiveFromWorkspace() {
+    if (!activeNoteEnabled()) {
+      paintContextStrip();
+      return;
+    }
+    try {
+      const leaf = app.workspace.activeLeaf || app.workspace.getMostRecentLeaf?.();
+      const view = leaf?.view;
+      const viewType = view?.getViewType?.() || '';
+      const file = view?.file || app.workspace.getActiveFile?.();
+      const filePath = file?.path || null;
+      const reported = markdownPathFromLeaf({ viewType, filePath });
+      if (reported) {
+        activeNoteState = onMarkdownFocus(activeNoteState, reported);
+      } else if (filePath && /\.md$/i.test(filePath)) {
+        // markdown path even if view type unknown
+        activeNoteState = onMarkdownFocus(activeNoteState, filePath);
+      }
+      // Prefer live active markdown file when available
+      const af = app.workspace.getActiveFile?.();
+      if (af?.extension === 'md') {
+        const vt = app.workspace.activeLeaf?.view?.getViewType?.() || '';
+        if (vt === 'markdown' || !vt) {
+          activeNoteState = onMarkdownFocus(activeNoteState, af.path);
+        }
+      }
+    } catch (e) {
+      console.warn('active note sync', e);
+    }
+    paintContextStrip();
+  }
+
+  btnFollow.onclick = () => {
+    activeNoteState = setActiveNoteMode(activeNoteState, 'follow');
+    plugin.settings.activeNoteMode = 'follow';
+    plugin.saveSettings?.();
+    syncActiveFromWorkspace();
+  };
+  btnPin.onclick = () => {
+    const cur =
+      getEffectiveActivePath(activeNoteState) ||
+      app.workspace.getActiveFile?.()?.path ||
+      plugin.settings.activeNotePinnedPath ||
+      null;
+    activeNoteState = setActiveNoteMode(activeNoteState, 'pin', { pinPath: cur });
+    plugin.settings.activeNoteMode = 'pin';
+    plugin.settings.activeNotePinnedPath = getEffectiveActivePath(activeNoteState);
+    plugin.saveSettings?.();
+    paintContextStrip();
+  };
+  btnOff.onclick = () => {
+    activeNoteState = setActiveNoteMode(activeNoteState, 'off');
+    plugin.settings.activeNoteMode = 'off';
+    plugin.saveSettings?.();
+    paintContextStrip();
+  };
+  contextPathEl.onclick = () => {
+    const p = getEffectiveActivePath(activeNoteState);
+    if (!p) return;
+    const f = app.vault.getAbstractFileByPath(p);
+    if (f) app.workspace.getLeaf(false).openFile(f);
+  };
+
+  const unsubLeaf = app.workspace.on?.('active-leaf-change', () => syncActiveFromWorkspace());
+  const unsubOpen = app.workspace.on?.('file-open', () => syncActiveFromWorkspace());
+  syncActiveFromWorkspace();
 
   // ---------- log ----------
   const logEl = shell.createDiv({ cls: 'me-soul-log' });
@@ -449,11 +610,46 @@ export function mountMeSoulChat(containerEl, ctx) {
       const meta = body.createDiv({ cls: 'me-soul-user-meta' });
       if (skill) meta.createSpan({ cls: 'me-soul-user-skill', text: skill.label });
       for (const c of usedChips) {
-        meta.createSpan({ cls: 'me-soul-user-chip', text: `${c.kind === 'raw' ? '📎' : '🔗'} ${shortName(c.path)}` });
+        const icon = c.kind === 'raw' ? '📎' : c.kind === 'active' ? '📄' : '🔗';
+        meta.createSpan({
+          cls: `me-soul-user-chip${c.kind === 'active' ? ' is-active-note' : ''}`,
+          text: `${icon} ${shortName(c.path)}`,
+        });
       }
     }
     if (text) body.createDiv({ cls: 'me-soul-user-text', text });
     scrollDown();
+  }
+
+  /**
+   * Build chips for send: manual @ + optional active note.
+   * @param {typeof chips} manual
+   */
+  function buildSendChips(manual) {
+    if (!activeNoteEnabled()) return manual.slice();
+    const activePath = getEffectiveActivePath(activeNoteState);
+    return mergeActiveNoteChips(manual, activePath);
+  }
+
+  async function loadChipContents(chipList) {
+    const maxChars =
+      plugin.settings.activeNoteMaxChars || DEFAULT_ACTIVE_NOTE_MAX_CHARS;
+    const out = [];
+    for (const c of chipList) {
+      if (!c?.path) continue;
+      if (c.kind === 'raw') {
+        out.push(c);
+        continue;
+      }
+      let content = '';
+      try {
+        content = (await readNoteBodyPreferEditor(app, c.path)) ?? '';
+      } catch {
+        content = '';
+      }
+      out.push({ ...c, content });
+    }
+    return { chips: out, maxChars };
   }
 
   function scrollDown() {
@@ -624,7 +820,8 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
     const text = inputEl.value.trim();
     const skill = activeSkill;
-    const usedChips = chips.slice();
+    const usedChips = buildSendChips(chips);
+    // Allow send with only active-note context (no text) only if skill or chips
     if (!text && !skill && !usedChips.length) return;
 
     // builtin commands
@@ -681,7 +878,8 @@ export function mountMeSoulChat(containerEl, ctx) {
   }
 
   async function runChatFlow(text, usedChips) {
-    const composed = await composeMessage(app, text, usedChips);
+    const { chips: loaded, maxChars } = await loadChipContents(usedChips);
+    const composed = composeWithContext(text, loaded, { maxChars });
     const fullPrompt = await assembleMemoryPrompt(app, plugin, composed, text, usedChips);
 
     if (plugin.settings.engine === 'openclaw') {
@@ -757,14 +955,21 @@ export function mountMeSoulChat(containerEl, ctx) {
    */
   async function runDigestWithGrok(text, usedChips) {
     const msg = createAgentMessage();
-    const firstRef =
-      usedChips.find((c) => c.kind === 'ref')?.path || usedChips[0]?.path || '';
-    const bodyText = String(text || '').trim();
-    const sourcePath =
-      firstRef || bodyText.replace(/^@/, '').split(/\s+/)[0] || '';
+    // usedChips may already include kind:'active' from buildSendChips — pure
+    // resolver skips active for "explicit" and only uses it when allowed.
+    const useActiveForDigest =
+      activeNoteEnabled() && plugin.settings.activeNoteForDigest !== false;
+    const sourcePath = resolveDigestSourcePath({
+      chips: usedChips,
+      activePath: useActiveForDigest
+        ? getEffectiveActivePath(activeNoteState)
+        : null,
+      bodyText: text,
+      useActiveForDigest,
+    });
 
     if (!sourcePath) {
-      msg.fail('用法：/me-digest + @笔记');
+      msg.fail('用法：/me-digest + @笔记（或先打开一篇笔记并开启自动上下文）');
       return;
     }
 
@@ -1150,9 +1355,42 @@ export function mountMeSoulChat(containerEl, ctx) {
   return {
     refreshCare,
     destroy() {
+      try {
+        if (unsubLeaf && app.workspace.offref) app.workspace.offref(unsubLeaf);
+        else if (unsubLeaf) app.workspace.off?.('active-leaf-change', unsubLeaf);
+      } catch {
+        /* */
+      }
+      try {
+        if (unsubOpen && app.workspace.offref) app.workspace.offref(unsubOpen);
+        else if (unsubOpen) app.workspace.off?.('file-open', unsubOpen);
+      } catch {
+        /* */
+      }
+      cancelVoice?.();
       containerEl.empty();
     },
   };
+}
+
+/**
+ * Prefer unsaved editor buffer for path; else vault read.
+ * @param {any} app
+ * @param {string} path
+ */
+async function readNoteBodyPreferEditor(app, path) {
+  try {
+    const leaves = app.workspace.getLeavesOfType?.('markdown') || [];
+    for (const leaf of leaves) {
+      const f = leaf?.view?.file;
+      if (f?.path === path && typeof leaf.view.editor?.getValue === 'function') {
+        return leaf.view.editor.getValue();
+      }
+    }
+  } catch {
+    /* */
+  }
+  return vaultRead(app, path);
 }
 
 // ================= helpers =================
@@ -1262,26 +1500,30 @@ async function assembleMemoryPrompt(app, plugin, composedUser, rawText, usedChip
   });
 }
 
-async function composeMessage(app, text, chips) {
-  if (!chips.length) return text;
-  const parts = [text];
-  const bodies = [];
+/**
+ * Legacy compose used by tests / call sites that pass chips without preloaded content.
+ * Prefer composeWithContext after loadChipContents in the chat panel.
+ */
+async function composeMessage(app, text, chips, opts = {}) {
+  if (!chips?.length) return text;
+  const maxChars = opts.maxChars ?? DEFAULT_ACTIVE_NOTE_MAX_CHARS;
+  const enriched = [];
   for (const c of chips) {
     if (c.kind === 'raw') {
-      bodies.push(`- 附件（原始证据，已入 raw）：${c.path}`);
+      enriched.push(c);
       continue;
     }
-    try {
-      const f = app.vault.getAbstractFileByPath(c.path);
-      const content = f ? (await app.vault.read(f)).slice(0, 4000) : '(读取失败)';
-      bodies.push(`### 引用：${c.path}\n\n${content}`);
-    } catch {
-      bodies.push(`### 引用：${c.path}\n\n(读取失败)`);
+    let content = c.content;
+    if (content == null) {
+      try {
+        content = (await readNoteBodyPreferEditor(app, c.path)) ?? '(读取失败)';
+      } catch {
+        content = '(读取失败)';
+      }
     }
+    enriched.push({ ...c, content });
   }
-  parts.push('\n## 附带上下文\n');
-  parts.push(bodies.join('\n\n'));
-  return parts.join('\n');
+  return composeWithContext(text, enriched, { maxChars });
 }
 
 async function writeFeedback(app, vote, text) {

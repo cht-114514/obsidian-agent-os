@@ -256,6 +256,11 @@ export default class MeSoulPlugin extends Plugin {
         voiceLanguage: '', // empty = auto; e.g. en, zh if supported
         voiceAutoSend: false,
         xaiApiKey: '',
+        activeNoteContext: true,
+        activeNoteMode: 'follow', // follow | pin | off
+        activeNotePinnedPath: '',
+        activeNoteMaxChars: 8000,
+        activeNoteForDigest: true,
         skills: [
           'me-digest',
           'me-write-insight',
@@ -438,6 +443,62 @@ class MeSoulSettingTab extends PluginSettingTab {
         t.setValue(!!this.plugin.settings.quiet).onChange(async (v) => {
           this.plugin.settings.quiet = v;
           this.plugin.controller.setQuiet(v);
+          await this.plugin.saveSettings();
+        })
+      );
+
+    containerEl.createEl('h3', { text: '当前笔记上下文' });
+    containerEl.createEl('p', {
+      text: '自动把你正在看的 Markdown 附带进对话，无需每次 @。可在输入栏上方切换「跟随 / 固定 / 关闭」。',
+      cls: 'setting-item-description',
+    });
+
+    new Setting(containerEl)
+      .setName('自动附带当前笔记')
+      .setDesc('关闭后完全不注入 active-note 上下文')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.activeNoteContext !== false).onChange(async (v) => {
+          this.plugin.settings.activeNoteContext = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('默认模式')
+      .setDesc('跟随焦点 / 固定 / 关闭')
+      .addDropdown((d) =>
+        d
+          .addOption('follow', '跟随')
+          .addOption('pin', '固定')
+          .addOption('off', '关闭')
+          .setValue(this.plugin.settings.activeNoteMode || 'follow')
+          .onChange(async (v) => {
+            this.plugin.settings.activeNoteMode = v;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('当前笔记最大字符')
+      .setDesc('截断正文，默认 8000')
+      .addText((t) =>
+        t
+          .setPlaceholder('8000')
+          .setValue(String(this.plugin.settings.activeNoteMaxChars ?? 8000))
+          .onChange(async (v) => {
+            const n = parseInt(v, 10);
+            this.plugin.settings.activeNoteMaxChars =
+              Number.isFinite(n) && n > 500 ? n : 8000;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Digest 默认用当前笔记')
+      .setDesc('无 @ 时 /me-digest 使用当前/跟随笔记')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.activeNoteForDigest !== false).onChange(async (v) => {
+          this.plugin.settings.activeNoteForDigest = v;
           await this.plugin.saveSettings();
         })
       );

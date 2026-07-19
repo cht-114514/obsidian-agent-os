@@ -256,6 +256,98 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   background: var(--ms-accent-soft);
 }
 
+/* ---------- active note context strip ---------- */
+
+.me-soul-context-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  z-index: 3;
+  background: var(--ms-material);
+  backdrop-filter: blur(var(--ms-blur-sm)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--ms-blur-sm)) saturate(160%);
+  border-bottom: 1px solid var(--ms-hairline);
+  flex-shrink: 0;
+  transition: background var(--ms-duration-fast) var(--ms-ease);
+}
+
+.me-soul-context-strip.is-flash {
+  background: var(--ms-accent-soft);
+}
+
+.me-soul-context-strip.is-disabled {
+  opacity: 0.72;
+}
+
+.me-soul-context-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.me-soul-context-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  letter-spacing: -0.01em;
+}
+
+.me-soul-context-strip.has-note .me-soul-context-path {
+  color: var(--text-normal);
+}
+
+.me-soul-context-path:hover {
+  color: var(--ms-accent);
+}
+
+.me-soul-context-modes {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.me-soul-context-btn {
+  appearance: none;
+  cursor: pointer;
+  border: 1px solid var(--ms-hairline);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  padding: 3px 9px;
+  border-radius: var(--ms-radius-pill);
+  transition:
+    background var(--ms-duration-fast) var(--ms-ease),
+    color var(--ms-duration-fast) var(--ms-ease),
+    border-color var(--ms-duration-fast) var(--ms-ease);
+}
+
+.me-soul-context-btn:hover {
+  color: var(--text-normal);
+  border-color: var(--ms-hairline-strong);
+}
+
+.me-soul-context-btn.is-on {
+  color: var(--ms-accent);
+  border-color: var(--ms-accent-line);
+  background: var(--ms-accent-soft);
+  font-weight: 600;
+}
+
+.me-soul-user-chip.is-active-note {
+  border: 1px solid var(--ms-accent-line);
+  background: var(--ms-accent-soft);
+}
+
 /* ---------- log ---------- */
 
 .me-soul-log {
