@@ -44,6 +44,11 @@ import {
   rotateSession,
   saveSessionToVault,
 } from './chat-history.js';
+import {
+  formatGrokRuntimeLabel,
+  normalizeGrokProfiles,
+  resolveGrokRuntime,
+} from './grok-runtime.js';
 
 /**
  * @param {HTMLElement} containerEl
@@ -122,6 +127,55 @@ export function mountMeSoulChat(containerEl, ctx) {
   const agentName = plugin.settings.agentName || 'Agent';
   brandText.createDiv({ cls: 'me-soul-title', text: agentName });
   const statusEl = brandText.createDiv({ cls: 'me-soul-subtitle', text: '就绪' });
+
+  // Model profile switcher (SuperGrok vs third-party) — always visible on home/sidebar
+  const modelRow = brandText.createDiv({ cls: 'me-soul-model-row' });
+  const modelSelect = modelRow.createEl('select', {
+    cls: 'me-soul-model-select',
+    attr: {
+      'aria-label': '模型配置档',
+      title: '切换 Grok Build 模型 / 第三方 API（不改对话记录）',
+    },
+  });
+  function refreshModelSelect() {
+    const profiles = normalizeGrokProfiles(plugin.settings.grokProfiles);
+    plugin.settings.grokProfiles = profiles;
+    const active = plugin.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
+    modelSelect.empty();
+    for (const p of profiles) {
+      const opt = modelSelect.createEl('option', {
+        text: p.label || p.model || p.id,
+        attr: { value: p.id },
+      });
+      if (p.id === active) opt.selected = true;
+    }
+    const rt = resolveGrokRuntime(plugin.settings);
+    modelSelect.setAttr('title', formatGrokRuntimeLabel(rt));
+  }
+  refreshModelSelect();
+  modelSelect.onchange = async () => {
+    const id = modelSelect.value;
+    if (!id || id === plugin.settings.grokActiveProfile) return;
+    if (busy) {
+      notify('请等当前回复结束后再切换模型');
+      refreshModelSelect();
+      return;
+    }
+    try {
+      const rt = plugin.switchGrokProfile
+        ? await plugin.switchGrokProfile(id)
+        : (() => {
+            plugin.settings.grokActiveProfile = id;
+            return resolveGrokRuntime(plugin.settings);
+          })();
+      refreshModelSelect();
+      setStatus(`模型：${formatGrokRuntimeLabel(rt)}`);
+      notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条消息生效）`);
+    } catch (e) {
+      notify(e?.message || String(e));
+      refreshModelSelect();
+    }
+  };
 
   const tools = header.createDiv({ cls: 'me-soul-header-tools' });
   const careEl = tools.createDiv({ cls: 'me-soul-care-chip', text: '牵挂' });
@@ -624,6 +678,10 @@ export function mountMeSoulChat(containerEl, ctx) {
     const w = logEl.createDiv({ cls: 'me-soul-msg me-soul-agent me-soul-welcome' });
     const body = w.createDiv({ cls: 'me-soul-msg-body' });
     const engineName = plugin.settings.engine === 'openclaw' ? 'OpenClaw' : 'Grok Build';
+    const rt =
+      plugin.settings.engine === 'openclaw'
+        ? null
+        : resolveGrokRuntime(plugin.settings);
     const mobile =
       typeof navigator !== 'undefined' &&
       /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
@@ -633,7 +691,9 @@ export function mountMeSoulChat(containerEl, ctx) {
     });
     body.createDiv({
       cls: 'me-soul-text me-soul-welcome-sub',
-      text: `内核 ${engineName} · 消化进 agent-inbox · 人区要你点头`,
+      text: rt
+        ? `内核 ${engineName} · ${formatGrokRuntimeLabel(rt)} · 人区要你点头`
+        : `内核 ${engineName} · 消化进 agent-inbox · 人区要你点头`,
     });
     if (mobile) {
       body.createDiv({
