@@ -177,8 +177,52 @@ export function composeWithContext(text, chips, opts = {}) {
 }
 
 /**
+ * True if token looks like a vault path, not a natural-language sentence.
+ * @param {string} token
+ */
+export function looksLikeVaultPath(token) {
+  const t = String(token || '').trim();
+  if (!t || t.length > 240) return false;
+  // Must look like a path or .md file — never a Chinese sentence without slashes
+  if (/\.md$/i.test(t)) return true;
+  if (t.includes('/') || t.includes('\\')) return true;
+  // bare folder-ish tokens without whitespace
+  if (!/\s/.test(t) && /^[\w.\u4e00-\u9fff-]+$/.test(t) && t.length < 80) {
+    // still reject pure imperative phrases
+    if (/消化|记住|帮我|所有|全部|一下|什么|怎么|请/.test(t)) return false;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Detect batch digest intents from free text (e.g. 所有日记).
+ * @param {string} text
+ * @returns {{ type: 'single' } | { type: 'folder-glob', folders: string[], label: string }}
+ */
+export function parseDigestIntent(text) {
+  const t = String(text || '').trim();
+  if (!t) return { type: 'single' };
+  if (/日记/.test(t) && /(所有|全部|批量|都|全部消化|消化一下)/.test(t)) {
+    return {
+      type: 'folder-glob',
+      folders: ['手记/日记', '手记/手写日记'],
+      label: '日记',
+    };
+  }
+  if (/(所有|全部).*(笔记|手记)/.test(t) && /消化|digest/i.test(t)) {
+    return {
+      type: 'folder-glob',
+      folders: ['手记'],
+      label: '手记',
+    };
+  }
+  return { type: 'single' };
+}
+
+/**
  * Digest source path: first **manual** chip (not raw/active), else active path
- * when allowed, else body token.
+ * when allowed, else body token **only if it looks like a path**.
  *
  * Kind `active` is never treated as an explicit user @ — mirrors chat-panel
  * wiring where buildSendChips() pre-merges the active note.
@@ -212,12 +256,57 @@ export function resolveDigestSourcePath(args = {}) {
 
   const body = String(args.bodyText || '').trim();
   if (!body) return '';
-  return body.replace(/^@/, '').split(/\s+/)[0] || '';
+  // Prefer @path token in body
+  const at = body.match(/@([^\s]+)/);
+  if (at) {
+    const p = at[1];
+    const asMd = /\.md$/i.test(p) ? p : `${p}.md`;
+    if (looksLikeVaultPath(p) || looksLikeVaultPath(asMd)) {
+      return /\.md$/i.test(p) ? p : asMd;
+    }
+  }
+  const token = body.replace(/^@/, '').split(/\s+/)[0] || '';
+  if (!looksLikeVaultPath(token)) return '';
+  return token;
+}
+
+/**
+ * Collect .md paths under folders (recursive, vault-relative).
+ * Pure helper: pass a listAllMdPaths(folder) → string[] function.
+ *
+ * @param {string[]} folders
+ * @param {(folder: string) => string[]} listMdUnder
+ * @param {{ limit?: number, excludeNames?: string[] }} [opts]
+ * @returns {string[]}
+ */
+export function collectMdPathsUnder(folders, listMdUnder, opts = {}) {
+  const limit = opts.limit ?? 500;
+  const exclude = new Set(opts.excludeNames || ['README.md', '00-入口.md']);
+  const out = [];
+  const seen = new Set();
+  for (const folder of folders || []) {
+    let paths = [];
+    try {
+      paths = listMdUnder(folder) || [];
+    } catch {
+      paths = [];
+    }
+    for (const p of paths) {
+      const name = String(p).split('/').pop();
+      if (exclude.has(name)) continue;
+      if (!/\.md$/i.test(p)) continue;
+      if (seen.has(p)) continue;
+      seen.add(p);
+      out.push(p);
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
 }
 
 /**
  * Panel-style digest source resolution: merge active into chips for chat, then
- * resolve digest source with the same rules as runDigestWithGrok.
+ * resolve digest source (legacy helper; Grok skill /me-digest now resolves paths itself).
  *
  * @param {{
  *   manualChips?: ContextChip[],

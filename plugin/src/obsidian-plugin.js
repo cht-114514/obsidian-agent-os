@@ -179,7 +179,7 @@ export default class MeSoulPlugin extends Plugin {
 
   /**
    * Lazily create / reuse the Grok ACP client bound to this vault.
-   * Mobile: throws a clear error (plugin still loads for UI + local skills).
+   * Mobile: throws a clear error (plugin still loads for UI; skills need Grok Build ACP).
    */
   getAcp() {
     if (!this.isDesktopKernelAvailable()) {
@@ -244,13 +244,13 @@ export default class MeSoulPlugin extends Plugin {
         agentVibe: '简洁、温暖、直接；像合伙人不是客服',
         homePath: '00-首页.md',
         retrieve: true,
-        embedEnabled: true,
+        embedEnabled: true, // required — wiki memory is vector-only
         embedBaseUrl: 'https://www.dmxapi.cn/v1',
         embedApiKey: '',
         embedModel: 'bge-m3',
         embedTopK: 3,
         embedMinScore: 0.28,
-        retrieveMode: 'hybrid',
+        retrieveMode: 'vector',
         // xAI voice STT
         voiceEnabled: true,
         voiceLanguage: '', // empty = auto; e.g. en, zh if supported
@@ -261,6 +261,7 @@ export default class MeSoulPlugin extends Plugin {
         activeNotePinnedPath: '',
         activeNoteMaxChars: 8000,
         activeNoteForDigest: true,
+        digestBatchMax: 8,
         skills: [
           'me-digest',
           'me-write-insight',
@@ -268,7 +269,8 @@ export default class MeSoulPlugin extends Plugin {
           'me-apply-pending',
           'me-apply-insight',
           'me-soul-promote',
-          'me-reindex',
+          'memorized',
+          'me-reindex', // alias of memorized
         ],
       },
       (await this.loadData()) || {}
@@ -281,6 +283,7 @@ export default class MeSoulPlugin extends Plugin {
       'me-apply-pending',
       'me-apply-insight',
       'me-soul-promote',
+      'memorized',
       'me-reindex',
     ];
     const saved = Array.isArray(this.settings.skills) ? this.settings.skills : [];
@@ -503,6 +506,21 @@ class MeSoulSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName('Digest 批量上限')
+      .setDesc('「所有日记」等批量消化每轮最多几篇（默认 8，防一次跑爆）')
+      .addText((t) =>
+        t
+          .setPlaceholder('8')
+          .setValue(String(this.plugin.settings.digestBatchMax ?? 8))
+          .onChange(async (v) => {
+            const n = parseInt(v, 10);
+            this.plugin.settings.digestBatchMax =
+              Number.isFinite(n) && n > 0 && n <= 50 ? n : 8;
+            await this.plugin.saveSettings();
+          })
+      );
+
     containerEl.createEl('h3', { text: '语音输入（xAI STT）' });
     containerEl.createEl('p', {
       text: '按住输入栏旁 🎤 说话，松手填入文字。优先流式 WebSocket，失败则整段 REST。Key 可填 API Key，或自动读 XAI_API_KEY / OpenClaw / ~/.grok/auth。',
@@ -554,36 +572,11 @@ class MeSoulSettingTab extends PluginSettingTab {
         })
       );
 
-    containerEl.createEl('h3', { text: '记忆检索（Embedding）' });
+    containerEl.createEl('h3', { text: '向量记忆（必需）' });
     containerEl.createEl('p', {
-      text: '默认 DMX + bge-m3。笔记片段会发往 Embed API 做向量化；密钥仅存本机 data.json。改模型后请运行 /me-reindex。',
+      text: 'Wiki 相关记忆仅走 embedding（vectors.jsonl）。默认 DMX + bge-m3；改模型或 digest 后请运行 /memorized。',
       cls: 'setting-item-description',
     });
-
-    new Setting(containerEl)
-      .setName('启用向量检索')
-      .setDesc('关闭后仅用关键词 index.md')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.embedEnabled !== false).onChange(async (v) => {
-          this.plugin.settings.embedEnabled = v;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName('检索模式')
-      .setDesc('hybrid = 向量 + 关键词（推荐）')
-      .addDropdown((d) =>
-        d
-          .addOption('hybrid', 'hybrid')
-          .addOption('vector', 'vector')
-          .addOption('keyword', 'keyword')
-          .setValue(this.plugin.settings.retrieveMode || 'hybrid')
-          .onChange(async (v) => {
-            this.plugin.settings.retrieveMode = v;
-            await this.plugin.saveSettings();
-          })
-      );
 
     new Setting(containerEl)
       .setName('Embed Base URL')
@@ -599,14 +592,16 @@ class MeSoulSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Embed API Key')
-      .setDesc('DMX 令牌；勿提交到 git')
+      .setName('Embed API Key（必需）')
+      .setDesc('无 Key 则无法检索 wiki 记忆；勿提交 git')
       .addText((t) => {
         t.inputEl.type = 'password';
         t.setPlaceholder('sk-…')
           .setValue(this.plugin.settings.embedApiKey || '')
           .onChange(async (v) => {
             this.plugin.settings.embedApiKey = v.trim();
+            this.plugin.settings.embedEnabled = true;
+            this.plugin.settings.retrieveMode = 'vector';
             await this.plugin.saveSettings();
           });
       });

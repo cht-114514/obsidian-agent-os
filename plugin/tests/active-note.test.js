@@ -11,6 +11,9 @@ import {
   composeWithContext,
   resolveDigestSourcePath,
   resolveDigestSourceAfterMerge,
+  looksLikeVaultPath,
+  parseDigestIntent,
+  collectMdPathsUnder,
   markdownPathFromLeaf,
   normalizeMdPath,
 } from '../src/active-note.js';
@@ -210,5 +213,42 @@ describe('normalizeMdPath', () => {
   it('rejects non-md', () => {
     assert.equal(normalizeMdPath('a.png'), null);
     assert.equal(normalizeMdPath('a.md'), 'a.md');
+  });
+});
+
+describe('digest path vs NL + batch intent', () => {
+  it('does not treat Chinese instructions as vault paths', () => {
+    assert.equal(looksLikeVaultPath('把我的所有日记文件消化一下'), false);
+    assert.equal(
+      resolveDigestSourcePath({
+        chips: [],
+        bodyText: '把我的所有日记文件消化一下',
+        useActiveForDigest: false,
+      }),
+      ''
+    );
+  });
+
+  it('accepts real paths', () => {
+    assert.equal(looksLikeVaultPath('手记/日记/2026-07-01.md'), true);
+    assert.equal(looksLikeVaultPath('note.md'), true);
+  });
+
+  it('parseDigestIntent detects all diaries', () => {
+    const i = parseDigestIntent('把我的所有日记文件消化一下');
+    assert.equal(i.type, 'folder-glob');
+    assert.ok(i.folders.some((f) => f.includes('日记')));
+  });
+
+  it('collectMdPathsUnder lists via callback', () => {
+    const paths = collectMdPathsUnder(
+      ['手记/日记'],
+      (folder) =>
+        folder === '手记/日记'
+          ? ['手记/日记/a.md', '手记/日记/README.md', '手记/日记/b.md']
+          : [],
+      { limit: 10 }
+    );
+    assert.deepEqual(paths, ['手记/日记/a.md', '手记/日记/b.md']);
   });
 });

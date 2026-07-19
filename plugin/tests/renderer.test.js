@@ -50,6 +50,26 @@ describe('plugin renderer', () => {
       ['me-digest', 'me-care-check']
     );
   });
+
+  it('renders memorized confirm with data-type for plugin embed wire', () => {
+    const text = [
+      ':::thought',
+      '准备写入向量记忆。',
+      ':::',
+      '',
+      ':::confirm type=memorized path=agent-inbox/wiki/vectors.jsonl',
+      'title: 写入向量记忆库',
+      'body: N 篇 wiki → vectors.jsonl',
+      'actions: [accept, reject]',
+      ':::',
+    ].join('\n');
+    const { html, blocks } = renderAgentMessage(text, { quiet: false });
+    const conf = blocks.find((b) => b.type === 'confirm');
+    assert.ok(conf);
+    assert.equal(conf.attrs?.type || conf.meta?.type, 'memorized');
+    assert.match(html, /data-type="memorized"/);
+    assert.match(html, /data-path="agent-inbox\/wiki\/vectors\.jsonl"/);
+  });
 });
 
 describe('plugin confirm actions', () => {

@@ -1,24 +1,19 @@
 ---
 name: me-care-check
-description: 牵挂 scan using cares.md policy; writes pending-care.md only.
+description: Grok Build 按 cares.md 扫描牵挂，写 pending-care.md。
 ---
 
 # me-care-check
 
-## Palace
+## Goal
 
-Read `agent-inbox/soul/cares.md` and `agent-inbox/palace/care_check_room.md`.
+Evidence-backed proactive care, within caps.
 
-## How to run
+## Steps
 
-```bash
-node "$ME_SOUL_ROOT/skills/me-care-check/run.mjs" --vault "/path/to/your/vault"
-```
+1. Read `agent-inbox/soul/cares.md` (daily_cap, quiet hours, blacklist)  
+2. Scan vault for **concrete** signals (paths + facts): pending pile, stale projects, streak breaks  
+3. Write/update **only** `agent-inbox/soul/pending-care.md`  
+4. Summarize items for the user; do not nag empty pep-talk  
 
-Options: `--quiet-today`, `--sent-today N`, `--now ISO`.
-
-## Rules
-
-- daily cap, quiet hours, blacklist from cares.md
-- evidence-backed items only
-- write `agent-inbox/soul/pending-care.md` only
+No human-zone writes.

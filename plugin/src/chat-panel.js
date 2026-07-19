@@ -1,5 +1,8 @@
 /**
- * Obsidian Agent OS chat panel — streaming ACP (Grok Build) + local me-* skills.
+ * Obsidian Agent OS chat panel — streaming ACP (Grok Build).
+ *
+ * Slash skills: load vault SKILL.md → Grok Build prompt → stream + confirm cards.
+ * Plugin keeps UI + confirm Accept/Reject (digest / insight / soul-promote / memorized).
  *
  * Interaction model (obsidian-cc inspired):
  *   @  → vault-wide fuzzy file search → reference chips
@@ -8,23 +11,9 @@
  *   👍 / 👎 / copy on every agent message → agent-inbox/soul/feedback/<date>.md
  */
 import { renderAgentMessage } from './renderer.js';
-import {
-  buildDigestPrompt,
-  ensureWikiDocument,
-  setWikiStatus,
-  buildDigestPending,
-  wikiPreview,
-  extractWikiMarkdown,
-} from './digest.js';
+import { setWikiStatus } from './digest.js';
 import { buildTurnPrompt, loadSoulPack } from './memory/inject.js';
-import {
-  parseWikiIndex,
-  serializeWikiIndex,
-  shouldSkipRetrieve,
-  upsertIndexItem,
-  removeIndexItem,
-  entryFromWikiFile,
-} from './memory/retrieve.js';
+import { shouldSkipRetrieve } from './memory/retrieve.js';
 import {
   retrieveRelevantMemory,
   reindexAllVectors,
@@ -39,11 +28,22 @@ import {
   getEffectiveActivePath,
   mergeActiveNoteChips,
   composeWithContext,
-  resolveDigestSourcePath,
   markdownPathFromLeaf,
   DEFAULT_ACTIVE_NOTE_MAX_CHARS,
 } from './active-note.js';
 import { checkWritePolicy } from './protocol-bridge.js';
+import {
+  buildGrokSkillPrompt,
+  isGrokSkill,
+  loadSkillMarkdown,
+} from './skill-prompt.js';
+import {
+  appendMessage,
+  createEmptySession,
+  loadSessionFromVault,
+  rotateSession,
+  saveSessionToVault,
+} from './chat-history.js';
 
 /**
  * @param {HTMLElement} containerEl
@@ -75,6 +75,44 @@ export function mountMeSoulChat(containerEl, ctx) {
   /** @type {{ id: string, label: string } | null} */
   let activeSkill = null;
   let busy = false;
+  /** @type {import('./chat-history.js').ChatSession} */
+  let chatSession = createEmptySession();
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let persistTimer = null;
+  let persistInFlight = false;
+  let persistQueued = false;
+
+  function schedulePersist() {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      flushPersist().catch((e) => console.warn('chat persist failed', e));
+    }, 250);
+  }
+
+  async function flushPersist() {
+    if (persistInFlight) {
+      persistQueued = true;
+      return;
+    }
+    persistInFlight = true;
+    try {
+      do {
+        persistQueued = false;
+        await saveSessionToVault(app, chatSession);
+      } while (persistQueued);
+    } finally {
+      persistInFlight = false;
+    }
+  }
+
+  /**
+   * @param {Omit<import('./chat-history.js').ChatMessage, 'id' | 'ts'> & { id?: string, ts?: number }} msg
+   */
+  function recordMessage(msg) {
+    chatSession = appendMessage(chatSession, msg);
+    schedulePersist();
+  }
 
   // ---------- header ----------
   const header = shell.createDiv({ cls: 'me-soul-header' });
@@ -107,11 +145,17 @@ export function mountMeSoulChat(containerEl, ctx) {
     logEl.toggleClass('is-quiet', controller.settings.quiet);
     notify(controller.settings.quiet ? '今日少说话：开' : '今日少说话：关');
   };
-  newBtn.onclick = () => {
+  newBtn.onclick = async () => {
     plugin.acp?.resetSession?.();
+    try {
+      chatSession = await rotateSession(app, chatSession);
+    } catch (e) {
+      console.warn('rotate session failed', e);
+      chatSession = createEmptySession();
+    }
     logEl.empty();
     appendWelcome();
-    notify('新会话已开启');
+    notify('新会话已开启（上一会话已归档）');
   };
 
   // ---------- active note context ----------
@@ -567,7 +611,8 @@ export function mountMeSoulChat(containerEl, ctx) {
       'me-write-insight': '沉淀心迹（对你的认知草案，非聊笔记）',
       'me-care-check': '检查牵挂',
       'me-soul-promote': '清洗 Wiki→升格 Soul',
-      'me-reindex': '重建 wiki 索引',
+      memorized: '写入/重建向量记忆库',
+      'me-reindex': '（别名）同 /memorized',
       'me-apply-pending': '合并已确认 pending',
       'me-apply-insight': '合并 insight',
     };
@@ -603,13 +648,19 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
   }
 
-  function appendUser(text, usedChips, skill) {
+  /**
+   * @param {string} text
+   * @param {{ path: string, kind?: string }[]} usedChips
+   * @param {{ id?: string, label?: string } | null} [skill]
+   * @param {{ persist?: boolean }} [opts]
+   */
+  function appendUser(text, usedChips, skill, opts = {}) {
     const div = logEl.createDiv({ cls: 'me-soul-msg me-soul-user' });
     const body = div.createDiv({ cls: 'me-soul-msg-body' });
-    if (skill || usedChips.length) {
+    if (skill || (usedChips && usedChips.length)) {
       const meta = body.createDiv({ cls: 'me-soul-user-meta' });
-      if (skill) meta.createSpan({ cls: 'me-soul-user-skill', text: skill.label });
-      for (const c of usedChips) {
+      if (skill) meta.createSpan({ cls: 'me-soul-user-skill', text: skill.label || skill.id || '' });
+      for (const c of usedChips || []) {
         const icon = c.kind === 'raw' ? '📎' : c.kind === 'active' ? '📄' : '🔗';
         meta.createSpan({
           cls: `me-soul-user-chip${c.kind === 'active' ? ' is-active-note' : ''}`,
@@ -619,6 +670,38 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
     if (text) body.createDiv({ cls: 'me-soul-user-text', text });
     scrollDown();
+    if (opts.persist !== false) {
+      recordMessage({
+        role: 'user',
+        text: text || '',
+        skill: skill ? { id: skill.id, label: skill.label || skill.id } : null,
+        chips: (usedChips || [])
+          .filter((c) => c?.path)
+          .map((c) => ({ path: c.path, kind: c.kind || 'ref' })),
+      });
+    }
+  }
+
+  /**
+   * Replay a stored agent turn (fences → cards; errors as error row).
+   * @param {import('./chat-history.js').ChatMessage} m
+   */
+  async function appendAgentFromHistory(m) {
+    const div = logEl.createDiv({ cls: 'me-soul-msg me-soul-agent' });
+    const body = div.createDiv({ cls: 'me-soul-msg-body' });
+    if (m.error) {
+      body.createDiv({ cls: 'me-soul-error', text: `出错了：${m.error}` });
+    } else if (m.text && /:::(?:confirm|thought)\b/.test(m.text)) {
+      const rendered = renderAgentMessage(m.text, { quiet: controller.settings.quiet });
+      body.innerHTML = rendered.html;
+      await wireConfirms(app, controller, body, Notice, plugin);
+    } else if (m.text) {
+      const el = body.createDiv({ cls: 'me-soul-stream-text' });
+      await renderMarkdownInto(el, m.text);
+    } else {
+      body.createDiv({ cls: 'me-soul-text', text: '（空回复）' });
+    }
+    appendFooter(div, m.text || m.error || '');
   }
 
   /**
@@ -779,12 +862,22 @@ export function mountMeSoulChat(containerEl, ctx) {
         endText();
         appendFooter(div, fullText);
         scrollDown();
+        recordMessage({
+          role: 'agent',
+          text: fullText || '',
+        });
       },
       fail(err) {
         endThought();
         endText();
-        body.createDiv({ cls: 'me-soul-error', text: `出错了：${err}` });
+        const msg = err?.message || String(err || 'unknown');
+        body.createDiv({ cls: 'me-soul-error', text: `出错了：${msg}` });
         scrollDown();
+        recordMessage({
+          role: 'agent',
+          text: '',
+          error: msg,
+        });
       },
     };
   }
@@ -919,79 +1012,49 @@ export function mountMeSoulChat(containerEl, ctx) {
     msg.finalize(full);
   }
 
+  /**
+   * All slash skills: load SKILL.md → Grok Build ACP → render confirm fences.
+   * Plugin only keeps UI, confirm Accept/Reject wiring (digest/insight/soul/memorized).
+   */
   async function runSkillFlow(skill, text, usedChips) {
-    // Model-backed digest via Grok Build ACP
-    if (skill.id === 'me-digest') {
-      await runDigestWithGrok(text, usedChips);
-      return;
-    }
-    if (skill.id === 'me-soul-promote') {
-      await runSoulPromoteWithGrok(text, usedChips);
-      return;
-    }
-    if (skill.id === 'me-reindex') {
-      await runReindex();
-      return;
-    }
-    const out = await runLocalSkill(app, skill.id, text, usedChips);
-    const msg = createAgentMessage();
-    if (!out) {
+    if (!isGrokSkill(skill.id)) {
       await runChatFlow(`/${skill.id} ${text}`.trim(), usedChips);
-      msg.root.remove();
       return;
     }
-    const rendered = renderAgentMessage(out.reply || out, {
-      quiet: controller.settings.quiet,
-    });
-    const body = msg.root.querySelector('.me-soul-msg-body');
-    body.innerHTML = rendered.html;
-    wireConfirms(app, controller, body, Notice, plugin);
-    msg.finalize(out.reply || '');
+    await runSkillWithGrok(skill, text, usedChips);
   }
 
-  /**
-   * /me-digest: Grok generates full wiki (pending_review) → confirm.
-   * Accept finalizes wiki; Reject deletes wiki.
-   */
-  async function runDigestWithGrok(text, usedChips) {
+  async function runSkillWithGrok(skill, text, usedChips) {
     const msg = createAgentMessage();
-    // usedChips may already include kind:'active' from buildSendChips — pure
-    // resolver skips active for "explicit" and only uses it when allowed.
-    const useActiveForDigest =
-      activeNoteEnabled() && plugin.settings.activeNoteForDigest !== false;
-    const sourcePath = resolveDigestSourcePath({
-      chips: usedChips,
-      activePath: useActiveForDigest
-        ? getEffectiveActivePath(activeNoteState)
-        : null,
-      bodyText: text,
-      useActiveForDigest,
-    });
-
-    if (!sourcePath) {
-      msg.fail('用法：/me-digest + @笔记（或先打开一篇笔记并开启自动上下文）');
-      return;
-    }
-
-    const content = await vaultRead(app, sourcePath);
-    if (content == null) {
-      msg.fail(`读不到源文件：${sourcePath}`);
-      return;
-    }
 
     if (plugin.settings.engine === 'openclaw') {
-      msg.fail('digest 需要 Grok Build 内核。请在 Obsidian Agent OS 设置里把引擎改为 Grok Build。');
+      msg.fail(
+        '此技能需要 Grok Build 内核。请在设置里把引擎改为 Grok Build。'
+      );
       return;
     }
 
-    setStatus('Grok 消化中…');
-    msg.thought('正在用 Grok 编译 wiki（不是机械截断）…');
+    setStatus(`运行 /${skill.id}…`);
+    const skillMd = await loadSkillMarkdown(skill.id, (rel) => vaultRead(app, rel));
+    const { chips: loaded, maxChars } = await loadChipContents(usedChips);
+    // Section-only (already starts with ## 附带上下文 when non-empty)
+    const contextBlock = composeWithContext('', loaded, { maxChars });
+    const activePath = activeNoteEnabled()
+      ? getEffectiveActivePath(activeNoteState)
+      : null;
+
+    const fullPrompt = buildGrokSkillPrompt({
+      skillId: skill.id,
+      skillMd,
+      userText: text || '',
+      contextBlock,
+      activePath,
+    });
 
     let full = '';
     try {
       const client = plugin.getAcp();
-      const prompt = buildDigestPrompt(sourcePath, content);
-      await client.prompt(prompt, {
+      const { stopReason } = await client.prompt(fullPrompt, {
         onThought: (t) => msg.thought(t),
         onText: (t) => {
           full += t;
@@ -1001,247 +1064,29 @@ export function mountMeSoulChat(containerEl, ctx) {
         onToolUpdate: (u) => msg.toolUpdate(u),
         onPermission: (req) => msg.permission(req),
       });
+      if (stopReason === 'cancelled') {
+        msg.root.querySelector('.me-soul-msg-body')?.createDiv({
+          cls: 'me-soul-error',
+          text: '（已停止）',
+        });
+      }
     } catch (e) {
       msg.fail(e?.message || String(e));
       return;
     }
 
-    const date = todayStamp();
-    const slug = slugify(sourcePath.split('/').pop());
-    const wikiRel = `agent-inbox/wiki/sources/${date}-${slug}.md`;
-    const pendingRel = `agent-inbox/pending/${date}-digest-${slug}.md`;
-
-    const wikiDoc = ensureWikiDocument(full, {
-      sourcePath,
-      wikiStatus: 'pending_review',
-      created: date,
-    });
-
-    if (!extractWikiMarkdown(full) && full.trim().length < 40) {
-      msg.fail('模型没有返回可用的 wiki 正文，请重试 /me-digest');
-      return;
-    }
-
-    try {
-      await vaultWrite(app, wikiRel, wikiDoc);
-      const pendingMd = buildDigestPending({
-        date,
-        title: `Digest ${sourcePath.split('/').pop()}`,
-        wikiRel,
-        sourcePath,
-        preview: wikiPreview(wikiDoc),
-      });
-      await vaultWrite(app, pendingRel, pendingMd);
-    } catch (e) {
-      msg.fail(`写入失败：${e?.message || e}`);
-      return;
-    }
-
-    const reply =
-      thoughtFence('模型编译完成：wiki 处于 pending_review，等人点头才定稿。') +
-      `\n已生成待审 wiki：\`${wikiRel}\`\n\n` +
-      `- 源：\`[[${sourcePath}]]\`\n` +
-      `- **Accept** → wiki 定稿（wiki_status: accepted）\n` +
-      `- **Reject** → **删除**该 wiki 文件\n\n` +
-      confirmFence({
-        type: 'digest',
-        path: pendingRel,
-        title: `确认 digest: ${sourcePath.split('/').pop()}`,
-        body: `待审 wiki：${wikiRel}\n预览：${wikiPreview(wikiDoc, 160)}`,
-        actions: ['accept', 'reject'],
-      });
-
+    // Re-render final text so :::confirm / :::thought become interactive cards
     const bodyEl = msg.root.querySelector('.me-soul-msg-body');
-    if (bodyEl) {
+    if (bodyEl && full.trim()) {
       bodyEl.empty();
-      const rendered = renderAgentMessage(reply, { quiet: controller.settings.quiet });
-      bodyEl.innerHTML = rendered.html;
-      wireConfirms(app, controller, bodyEl, Notice, plugin);
-    }
-    msg.finalize(reply);
-    setStatus('就绪');
-  }
-
-  async function runReindex() {
-    const msg = createAgentMessage();
-    setStatus('重建索引…');
-    try {
-      const folder = app.vault.getAbstractFileByPath('agent-inbox/wiki/sources');
-      const files = folder?.children?.filter((c) => c.extension === 'md') || [];
-      const items = [];
-      /** @type {{ path: string, md: string }[]} */
-      const acceptedFiles = [];
-      for (const f of files) {
-        const md = await app.vault.read(f);
-        if (/wiki_status:\s*pending_review/.test(md)) continue;
-        items.push(entryFromWikiFile(f.path, md));
-        acceptedFiles.push({ path: f.path, md });
-      }
-      await vaultWrite(app, 'agent-inbox/wiki/index.md', serializeWikiIndex(items));
-
-      let vectorLine = '';
-      try {
-        const vres = await reindexAllVectors(app, plugin, acceptedFiles);
-        if (vres.skipped) {
-          vectorLine =
-            vres.reason === 'no-key'
-              ? '\n向量索引：已跳过（未配置 Embed API Key）'
-              : '\n向量索引：已关闭';
-        } else {
-          vectorLine = `\n向量索引：${vres.vectorChunks} 块（新 embed ${vres.embedded} · 复用 ${vres.reused} · ${vres.model}）→ agent-inbox/wiki/vectors.jsonl`;
-        }
-      } catch (ve) {
-        vectorLine = `\n向量索引失败：${ve?.message || ve}（关键词索引已更新）`;
-      }
-
-      const summary = `已重建 wiki 索引：${items.length} 条 → agent-inbox/wiki/index.md${vectorLine}`;
-      const body = msg.root.querySelector('.me-soul-msg-body');
-      if (body) {
-        body.empty();
-        body.createDiv({ cls: 'me-soul-text', text: summary });
-      }
-      msg.finalize(`reindex ${items.length}`);
-      notify(`索引 ${items.length} 条`);
-    } catch (e) {
-      msg.fail(e?.message || String(e));
-    }
-    setStatus('就绪');
-  }
-
-  /**
-   * /me-soul-promote — semi-auto skill: scan insights/reflections/feedback → pending plan.
-   */
-  async function runSoulPromoteWithGrok(text, usedChips) {
-    const msg = createAgentMessage();
-    if (plugin.settings.engine === 'openclaw') {
-      msg.fail('升格技能需要 Grok Build 内核');
-      return;
-    }
-    setStatus('清洗记忆中…');
-    msg.thought('扫描 insights / reflections / feedback，分类哪些应进 Soul…');
-
-    const candidates = [];
-    async function collectDir(dir, kind) {
-      const folder = app.vault.getAbstractFileByPath(dir);
-      if (!folder?.children) return;
-      for (const f of folder.children) {
-        if (f.extension !== 'md' || f.name === 'README.md') continue;
-        const md = await app.vault.read(f);
-        candidates.push({ kind, path: f.path, excerpt: md.slice(0, 1200) });
-      }
-    }
-    await collectDir('agent-inbox/soul/insights/accepted', 'insight');
-    await collectDir('agent-inbox/soul/insights/drafts', 'insight_draft');
-    await collectDir('agent-inbox/soul/feedback', 'feedback');
-    await collectDir('agent-inbox/wiki/reflections', 'reflection');
-
-    if (!candidates.length) {
-      msg.fail('没有可清洗的候选（insights/reflections/feedback 为空）');
-      return;
-    }
-
-    const prompt = [
-      '你是 Obsidian Agent OS 记忆清洗器。根据候选条目，决定如何升格进 Agent 人格文件。',
-      '只输出 JSON（不要 markdown 围栏），格式：',
-      '{ "updates": [ { "target": "profile"|"style"|"soul", "title": "...", "text": "...", "sources": ["path"] } ], "skipped": [ { "path": "...", "reason": "..." } ] }',
-      '规则：',
-      '- 知识性 wiki sources 不要进 soul；偏好/边界/语气 → profile 或 style 或 soul',
-      '- text 要可直接追加到目标文件的一小节',
-      '- 最多 8 条 updates',
-      '',
-      '候选：',
-      JSON.stringify(candidates.slice(0, 20), null, 0),
-      text ? `\n用户补充：${text}` : '',
-    ].join('\n');
-
-    let full = '';
-    try {
-      const client = plugin.getAcp();
-      await client.prompt(prompt, {
-        onThought: (t) => msg.thought(t),
-        onText: (t) => {
-          full += t;
-          msg.text(t);
-        },
-        onToolCall: (u) => msg.toolCall(u),
-        onToolUpdate: (u) => msg.toolUpdate(u),
-        onPermission: (req) => msg.permission(req),
+      const rendered = renderAgentMessage(full, {
+        quiet: controller.settings.quiet,
       });
-    } catch (e) {
-      msg.fail(e?.message || String(e));
-      return;
-    }
-
-    let plan;
-    try {
-      const jsonMatch = full.match(/\{[\s\S]*\}/);
-      plan = JSON.parse(jsonMatch ? jsonMatch[0] : full);
-    } catch {
-      msg.fail('模型未返回合法 JSON 计划，请重试 /me-soul-promote');
-      return;
-    }
-
-    const date = todayStamp();
-    const pendingRel = `agent-inbox/pending/${date}-soul-promote.md`;
-    const updates = plan.updates || [];
-    const pendingBody = [
-      '---',
-      'status: pending',
-      'type: soul-promote',
-      `title: Soul 清洗升格 ${date}`,
-      `created: ${date}`,
-      'path: agent-inbox/soul/profile.md',
-      '---',
-      '',
-      '## 升格计划（Accept 后写入）',
-      '',
-      ...updates.map(
-        (u, i) =>
-          `### ${i + 1}. → ${u.target}\n**${u.title || ''}**\n\n${u.text || ''}\n\n来源：${(u.sources || []).join(', ')}\n`
-      ),
-      '',
-      '## 跳过',
-      '',
-      ...((plan.skipped || []).map((s) => `- ${s.path}: ${s.reason}`) || ['- （无）']),
-      '',
-      '```json',
-      JSON.stringify(plan, null, 2),
-      '```',
-      '',
-    ].join('\n');
-
-    try {
-      await vaultWrite(app, pendingRel, pendingBody);
-    } catch (e) {
-      msg.fail(String(e.message || e));
-      return;
-    }
-
-    const reply =
-      thoughtFence(`扫到 ${candidates.length} 条候选，提议 ${updates.length} 条升格。`) +
-      `\n计划已写入 \`${pendingRel}\`。\n\n` +
-      confirmFence({
-        type: 'soul-promote',
-        path: pendingRel,
-        title: '确认清洗升格 Soul',
-        body: updates.length
-          ? updates.map((u) => `${u.target}: ${u.title || u.text?.slice(0, 40)}`).join('；')
-          : '无更新',
-        actions: ['accept', 'reject'],
-      });
-
-    const bodyEl = msg.root.querySelector('.me-soul-msg-body');
-    if (bodyEl) {
-      bodyEl.empty();
-      const rendered = renderAgentMessage(reply, { quiet: controller.settings.quiet });
       bodyEl.innerHTML = rendered.html;
-      wireConfirms(app, controller, bodyEl, Notice, plugin);
+      await wireConfirms(app, controller, bodyEl, Notice, plugin);
     }
-    msg.finalize(reply);
-    setStatus('就绪');
+    msg.finalize(full);
   }
-
-
 
   // ---------- paste / drop → raw ----------
   async function saveToRaw(file) {
@@ -1348,13 +1193,46 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
   }
 
-  appendWelcome();
-  refreshCare();
+  async function restoreOrWelcome() {
+    try {
+      chatSession = await loadSessionFromVault(app);
+    } catch (e) {
+      console.warn('load chat session failed', e);
+      chatSession = createEmptySession();
+    }
+    logEl.empty();
+    if (!chatSession.messages?.length) {
+      appendWelcome();
+      return;
+    }
+    for (const m of chatSession.messages) {
+      if (m.role === 'user') {
+        appendUser(m.text || '', m.chips || [], m.skill || null, { persist: false });
+      } else if (m.role === 'agent') {
+        await appendAgentFromHistory(m);
+      }
+    }
+    scrollDown();
+  }
+
+  // Restore previous transcript (or welcome). Fire-and-forget with care refresh.
+  restoreOrWelcome()
+    .then(() => refreshCare())
+    .catch((e) => {
+      console.warn(e);
+      appendWelcome();
+      refreshCare();
+    });
   autoGrow();
 
   return {
     refreshCare,
     destroy() {
+      if (persistTimer) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+      flushPersist().catch((e) => console.warn('flush on destroy failed', e));
       try {
         if (unsubLeaf && app.workspace.offref) app.workspace.offref(unsubLeaf);
         else if (unsubLeaf) app.workspace.off?.('active-leaf-change', unsubLeaf);
@@ -1545,69 +1423,6 @@ async function writeFeedback(app, vote, text) {
   }
 }
 
-/**
- * Run local me-* skill scripts via Node (desktop only).
- */
-/**
- * Desktop Node require helper (optional). Prefer vault API skills when possible.
- */
-function nodeRequire(id) {
-  const candidates = [];
-  try {
-    if (typeof window !== 'undefined' && typeof window.require === 'function') {
-      candidates.push(window.require);
-    }
-  } catch {}
-  try {
-    if (typeof globalThis !== 'undefined' && typeof globalThis.require === 'function') {
-      candidates.push(globalThis.require);
-    }
-  } catch {}
-  try {
-    if (typeof require === 'function') candidates.push(require);
-  } catch {}
-  for (const r of candidates) {
-    try {
-      return r(id);
-    } catch {
-      /* next */
-    }
-  }
-  return null;
-}
-
-function todayStamp() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function slugify(s) {
-  return (
-    String(s || '')
-      .replace(/\.md$/i, '')
-      .replace(/[^\w\u4e00-\u9fff-]+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40) || 'note'
-  );
-}
-
-function thoughtFence(t) {
-  return `:::thought\n${t}\n:::\n`;
-}
-
-function confirmFence({ type, path, title, body, actions = ['accept', 'edit', 'reject'] }) {
-  return [
-    `:::confirm type=${type} path=${path}`,
-    `title: ${title}`,
-    `body: ${body}`,
-    `actions: [${actions.join(', ')}]`,
-    ':::',
-    '',
-  ].join('\n');
-}
-
 async function vaultWrite(app, rel, content) {
   if (!rel.startsWith('agent-inbox/')) {
     throw new Error(`refuse write outside agent-inbox: ${rel}`);
@@ -1625,314 +1440,38 @@ async function vaultRead(app, rel) {
   return app.vault.read(f);
 }
 
-/**
- * In-process skills via Obsidian vault API (no child_process).
- */
-
 /** True when user is asking to discuss a note, not write a profile 心迹. */
 function looksLikeNoteDiscussion(text, chips = []) {
   const hasChip = (chips || []).some((c) => c && (c.path || c.kind === 'ref' || c.kind === 'raw'));
   const t = String(text || '');
   const hasAt = /@\S+/.test(t) || /\[\[[^\]]+\]\]/.test(t);
   if (!hasChip && !hasAt) {
-    // bare discussion verbs without a note → still might be chat; don't force insight redirect
-    // only treat as note-discussion when a note is in play
     return false;
   }
-  // discussion / analysis intents
   if (/讨论|聊聊|分析|看看|解读|讲解|讲讲|帮我看|读一下|总结一下|什么意思|讲下|说说这/.test(t)) {
     return true;
   }
-  // note chip + short non-insight imperative often means "talk about this"
   if (hasChip && t && !/(偏好|习惯|边界|记住|以后|不要|别再|我希望|我更|风格|纠正)/.test(t)) {
     if (/^(讨论|聊聊|看看|分析)/.test(t.trim())) return true;
   }
   return false;
 }
 
-async function runLocalSkill(app, skillId, text, chips) {
-  if (!skillId.startsWith('me-')) return null;
-  if (!app?.vault) return null;
-
-  const firstRef = chips.find((c) => c.kind === 'ref')?.path || chips[0]?.path || '';
-  const bodyText = String(text || '').trim();
-  const date = todayStamp();
-
-  try {
-    if (skillId === 'me-write-insight') {
-      // This skill ONLY drafts profile-learning 心迹 — not note discussion, not a pedagogy mode.
-      if (looksLikeNoteDiscussion(bodyText, chips)) {
-        return {
-          reply: [
-            thoughtFence('你像是在讨论笔记，不是在写心迹。'),
-            '**`/me-write-insight` 做什么**',
-            '把「我对你的稳定判断」写成可确认草案（偏好 / 边界 / 纠正），供以后越用越懂你。',
-            '',
-            '**它不做什么**',
-            '不聊某篇笔记、不做苏格拉底教学法、不代替普通对话。',
-            '',
-            '**若要讨论笔记**：先去掉「写一条心迹」技能 pill，再 `@笔记` +「讨论一下…」。',
-            '',
-            '**若要写心迹**（示例是内容，不是技能名）：',
-            '```',
-            '/me-write-insight 偏好：排查先诊断再动手，不要盲目试',
-            '/me-write-insight 沟通边界 | 不喜欢空泛赞美开场',
-            '```',
-          ].join('\n'),
-        };
-      }
-      if (!bodyText) {
-        return {
-          reply: [
-            thoughtFence('心迹 = 我对你的稳定认知草案，不是讨论笔记的入口。'),
-            '**本技能只做一件事**：把一句可沉淀的判断写进 `insights/drafts` + 确认卡。',
-            '',
-            '**正确用法（示例是「心迹内容」，不是技能功能名）**',
-            '```',
-            '/me-write-insight 偏好：排查先诊断再动手',
-            '/me-write-insight 沟通边界 | 不喜欢空泛赞美开场',
-            '/me-write-insight 学习：做对题后还要追问为什么',
-            '```',
-            '',
-            '**常见误会**',
-            '- 说明里的例子 ≠ 本技能在做「苏格拉底式教学」；那只是一条可记住的偏好文案。',
-            '- 想讨论 `先猜后证.md` 这类笔记：取消技能 pill → `@先猜后证.md` → 「讨论一下」。',
-            '',
-            '成功后：drafts + pending 确认卡 → Accept → `/me-apply-insight @pending路径` 合并 profile。',
-          ].join('\n'),
-        };
-      }
-      let title = '心迹';
-      let body = bodyText;
-      if (bodyText.includes('|')) {
-        const [t, ...rest] = bodyText.split('|');
-        if (rest.length) {
-          title = t.trim() || title;
-          body = rest.join('|').trim();
-        }
-      }
-      const slug = slugify(title);
-      const draftRel = `agent-inbox/soul/insights/drafts/${date}-${slug}.md`;
-      const pendingRel = `agent-inbox/pending/${date}-insight-${slug}.md`;
-      const draftMd = [
-        '---',
-        'status: draft',
-        'type: insight',
-        `title: ${title}`,
-        `created: ${date}`,
-        '---',
-        '',
-        body,
-        '',
-      ].join('\n');
-      const pendingMd = [
-        '---',
-        'status: pending',
-        'type: insight',
-        `title: ${title}`,
-        `created: ${date}`,
-        'path: agent-inbox/soul/profile.md',
-        `source_paths: ${JSON.stringify([draftRel])}`,
-        '---',
-        '',
-        '## 心迹草案',
-        '',
-        body,
-        '',
-        '## 合并计划',
-        '',
-        `- 确认后用 /me-apply-insight 合并到 profile`,
-        `- 草案：\`${draftRel}\``,
-        '',
-      ].join('\n');
-      await vaultWrite(app, draftRel, draftMd);
-      await vaultWrite(app, pendingRel, pendingMd);
-      return {
-        reply: [
-          thoughtFence('这一点像是稳定偏好，先写成心迹草案，你点头我再写进 profile。'),
-          `已起草心迹：\`${draftRel}\``,
-          '',
-          confirmFence({
-            type: 'insight',
-            path: pendingRel,
-            title,
-            body,
-          }),
-        ].join('\n'),
-      };
-    }
-
-    if (skillId === 'me-digest') {
-      // Handled by runDigestWithGrok (Grok Build model). Should not reach here.
-      return {
-        reply: thoughtFence('请从 UI 走 /me-digest（Grok 编译）。') + '\n内部错误：机械 digest 已禁用。',
-      };
-    }
-
-    if (skillId === 'me-care-check') {
-      // Prefer node skill for full policy; fallback simple pending count via vault
-      const spawned = await trySpawnSkill(app, skillId, ['--vault', app.vault.adapter?.basePath].filter(Boolean));
-      if (spawned) return spawned;
-      const pendingFolder = app.vault.getAbstractFileByPath('agent-inbox/pending');
-      const files =
-        pendingFolder?.children?.filter((c) => c.extension === 'md' && c.name !== 'README.md') || [];
-      const careRel = 'agent-inbox/soul/pending-care.md';
-      if (files.length === 0) {
-        await vaultWrite(
-          app,
-          careRel,
-          '---\ntitle: 待展示牵挂\ntype: pending-care\nitems: 0\n---\n\n# Pending Care\n\n当前无未读牵挂。\n'
-        );
-        return {
-          reply: thoughtFence('扫了一圈，没什么非说不可的。') + '\n牵挂检查完成：0 条。',
-        };
-      }
-      const evidence = files.slice(0, 5).map((f) => f.path);
-      const md = [
-        '---',
-        'title: 待展示牵挂',
-        'type: pending-care',
-        `items: 1`,
-        '---',
-        '',
-        '# Pending Care',
-        '',
-        '## 1. pending-some',
-        '',
-        `有 ${files.length} 条 pending 等你点头。`,
-        '',
-        '证据:',
-        ...evidence.map((e) => `  - ${e}`),
-        '',
-      ].join('\n');
-      await vaultWrite(app, careRel, md);
-      return {
-        reply:
-          thoughtFence(`有 1 条牵挂值得说——${files.length} 条 pending。`) +
-          `\n牵挂检查完成：1 条写入 \`${careRel}\`。`,
-      };
-    }
-
-    if (skillId === 'me-apply-pending' || skillId === 'me-apply-insight') {
-      const pend = (bodyText || firstRef || '').replace(/^@/, '');
-      if (!pend) {
-        return {
-          reply: `:::thought\n需要 pending 路径。\n:::\n\n用法：\`/${skillId} agent-inbox/pending/xxx.md\``,
-        };
-      }
-      // use protocol from bundle for state machine
-      const { approvePendingMarkdown, applyPendingMarkdown, parsePendingMarkdown } = await import(
-        './protocol-bridge.js'
-      );
-      // re-export names from confirm - check protocol-bridge exports
-      let md = await vaultRead(app, pend);
-      if (md == null) return { reply: `找不到 \`${pend}\`` };
-      const rec = parsePendingMarkdown(md);
-      if (rec.status !== 'approved' && rec.status !== 'applied') {
-        return {
-          reply: `:::thought\npending 状态是 ${rec.status}，需要先 Accept。\n:::\n\n打开确认卡点 Accept，或先批准再 apply。`,
-        };
-      }
-      if (skillId === 'me-apply-insight') {
-        // merge into profile
-        const profileRel = 'agent-inbox/soul/profile.md';
-        let profile = (await vaultRead(app, profileRel)) || '# Profile\n';
-        const block = `\n\n## Insight ${date} — ${rec.title}\n\n${rec.body.trim()}\n`;
-        if (!profile.includes(rec.body.trim().slice(0, 40))) {
-          profile = profile.trimEnd() + block;
-          await vaultWrite(app, profileRel, profile);
-        }
-        const acceptedRel = `agent-inbox/soul/insights/accepted/${date}-${slugify(rec.title)}.md`;
-        await vaultWrite(
-          app,
-          acceptedRel,
-          `---\nstatus: accepted\ntitle: ${rec.title}\n---\n\n${rec.body}\n`
-        );
-        if (rec.status === 'approved') {
-          const applied = applyPendingMarkdown(md);
-          if (applied.ok) await vaultWrite(app, pend, applied.markdown);
-        }
-        return {
-          reply:
-            thoughtFence('心迹进 profile 了——靠你点头，不是我偷记。') +
-            `\n已合并 → \`${profileRel}\``,
-        };
-      }
-      // me-apply-pending
-      if (rec.status === 'approved') {
-        const applied = applyPendingMarkdown(md);
-        if (!applied.ok) return { reply: applied.error };
-        await vaultWrite(app, pend, applied.markdown);
-      }
-      return {
-        reply: thoughtFence('pending 已 applied；人区仍只读。') + `\n已应用 \`${pend}\``,
-      };
-    }
-
-    return null;
-  } catch (e) {
-    return {
-      reply: `:::thought\nskill 执行失败。\n:::\n\n${e?.message || String(e)}`,
-    };
-  }
-}
-
-/** Optional CLI fallback when basePath + child_process available */
-async function trySpawnSkill(app, skillId, extraArgs) {
-  const base = app?.vault?.adapter?.basePath || app?.vault?.adapter?.getBasePath?.();
-  if (!base) return null;
-  const r = nodeRequire('child_process');
-  const path = nodeRequire('path');
-  if (!r || !path) return null;
-  const { spawn } = r;
-  const { join } = path;
-  const skillRoot = join(base, 'agent-inbox', 'me-soul', 'skills', skillId, 'run.mjs');
-  return new Promise((resolve) => {
-    try {
-      const child = spawn('node', [skillRoot, '--vault', base, ...extraArgs], { cwd: base });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (d) => (stdout += d.toString()));
-      child.stderr.on('data', (d) => (stderr += d.toString()));
-      child.on('error', () => resolve(null));
-      child.on('close', (code) => {
-        if (code !== 0 && !stdout.trim()) return resolve(null);
-        resolve({ reply: stdout.replace(/\n<!--[\s\S]*?-->\n?/g, '\n').trim() || stderr });
-      });
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-
-
-
+/** On digest Accept: embed into vectors.jsonl only (no keyword index). */
 async function updateWikiIndexOnAccept(app, wikiPath, plugin) {
   if (!wikiPath || !wikiPath.startsWith('agent-inbox/wiki/')) return;
   const md = await vaultRead(app, wikiPath);
-  if (!md) return;
-  const indexMd = (await vaultRead(app, 'agent-inbox/wiki/index.md')) || '';
-  let items = parseWikiIndex(indexMd);
-  const entry = entryFromWikiFile(wikiPath, md);
-  entry.wiki_status = 'accepted';
-  items = upsertIndexItem(items, entry);
-  await vaultWrite(app, 'agent-inbox/wiki/index.md', serializeWikiIndex(items));
-  if (plugin) {
-    try {
-      await upsertVectorsForPath(app, plugin, wikiPath, md);
-    } catch (e) {
-      console.warn('vector upsert on accept failed', e);
-    }
+  if (!md || !plugin) return;
+  try {
+    await upsertVectorsForPath(app, plugin, wikiPath, md);
+  } catch (e) {
+    console.warn('vector upsert on accept failed', e);
   }
 }
 
+/** On digest Reject: drop vector chunks for that path. */
 async function updateWikiIndexOnReject(app, wikiPath) {
   if (!wikiPath) return;
-  const indexMd = (await vaultRead(app, 'agent-inbox/wiki/index.md')) || '';
-  let items = parseWikiIndex(indexMd);
-  items = removeIndexItem(items, wikiPath);
-  await vaultWrite(app, 'agent-inbox/wiki/index.md', serializeWikiIndex(items));
   try {
     await removeVectorsForPath(app, wikiPath);
   } catch (e) {
@@ -1973,6 +1512,39 @@ function showNotice(Notice, message) {
   new Notice(String(message ?? ''));
 }
 
+/**
+ * Embed accepted wiki sources into vectors.jsonl (plugin-side; Grok cannot call embed API).
+ * @returns {Promise<{ ok?: boolean, skipped?: boolean, reason?: string, summary: string, vectorChunks?: number }>}
+ */
+async function runMemorizedEmbed(app, plugin) {
+  const folder = app.vault.getAbstractFileByPath('agent-inbox/wiki/sources');
+  const files = folder?.children?.filter((c) => c.extension === 'md') || [];
+  /** @type {{ path: string, md: string }[]} */
+  const acceptedFiles = [];
+  for (const f of files) {
+    const md = await app.vault.read(f);
+    if (/wiki_status:\s*pending_review/.test(md)) continue;
+    acceptedFiles.push({ path: f.path, md });
+  }
+  const vres = await reindexAllVectors(app, plugin, acceptedFiles);
+  if (vres.skipped) {
+    return {
+      skipped: true,
+      reason: vres.reason,
+      summary:
+        vres.reason === 'no-key'
+          ? '未能写入记忆库：未配置 Embed API Key（设置 → 向量记忆）。'
+          : '向量记忆写入已跳过。',
+      vectorChunks: 0,
+    };
+  }
+  return {
+    ok: true,
+    summary: `已写入向量记忆库：${acceptedFiles.length} 篇 wiki → ${vres.vectorChunks} 块（新 embed ${vres.embedded} · 复用 ${vres.reused} · ${vres.model}）→ agent-inbox/wiki/vectors.jsonl`,
+    vectorChunks: vres.vectorChunks,
+  };
+}
+
 async function wireConfirms(app, controller, root, Notice, plugin) {
   root.querySelectorAll('.me-soul-confirm').forEach((card) => {
     const path = card.getAttribute('data-path');
@@ -1980,7 +1552,37 @@ async function wireConfirms(app, controller, root, Notice, plugin) {
     card.querySelectorAll('button').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const action = btn.getAttribute('data-action');
-        if (!path) return;
+        if (!path && confirmType !== 'memorized') return;
+
+        // memorized: no pending markdown — plugin runs embedder on Accept
+        if (confirmType === 'memorized') {
+          if (action === 'reject') {
+            card.classList.add('is-rejected');
+            card.querySelectorAll('button').forEach((b) => b.setAttr('disabled', 'true'));
+            showNotice(Notice, '已取消写入向量记忆');
+            return;
+          }
+          if (action === 'accept') {
+            card.querySelectorAll('button').forEach((b) => b.setAttr('disabled', 'true'));
+            showNotice(Notice, '正在写入向量记忆…');
+            try {
+              const res = await runMemorizedEmbed(app, plugin);
+              if (res.skipped) {
+                showNotice(Notice, res.summary);
+                card.classList.add('is-rejected');
+              } else {
+                showNotice(Notice, res.summary);
+                card.classList.add('is-accepted');
+              }
+            } catch (e) {
+              showNotice(Notice, `向量记忆失败：${e?.message || e}`);
+              card.classList.add('is-rejected');
+            }
+            return;
+          }
+          return;
+        }
+
         if (!checkWritePolicy(path).allowed) {
           showNotice(Notice, '拒绝写入 agent-inbox 以外路径');
           return;

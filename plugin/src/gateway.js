@@ -52,6 +52,7 @@ export function defaultGatewaySettings() {
       'me-apply-pending',
       'me-apply-insight',
       'me-soul-promote',
+      'memorized',
       'me-reindex',
     ],
   };

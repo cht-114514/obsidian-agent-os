@@ -97,7 +97,7 @@ export function buildTurnPrompt(pack) {
 
   const retrieved = pack.retrieved || [];
   if (retrieved.length) {
-    parts.push('\n## 相关记忆（预检索：hybrid 关键词 + embedding）\n');
+    parts.push('\n## 相关记忆（预检索：向量 embedding）\n');
     retrieved.slice(0, caps.retrievedMax).forEach((r, i) => {
       parts.push(
         `### ${i + 1}. ${r.title || r.path}\n路径：\`${r.path}\`\n\n${truncateText(r.excerpt, caps.retrievedEach)}\n`

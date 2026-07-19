@@ -95,11 +95,11 @@ export async function embedTexts(opts) {
  * Default DMX settings (no secret).
  */
 export const DEFAULT_EMBED_SETTINGS = {
-  embedEnabled: true,
+  embedEnabled: true, // required for wiki memory
   embedBaseUrl: 'https://www.dmxapi.cn/v1',
   embedApiKey: '',
   embedModel: 'bge-m3',
   embedTopK: 3,
   embedMinScore: 0.28,
-  retrieveMode: 'hybrid', // keyword | vector | hybrid
+  retrieveMode: 'vector', // keyword index removed; vector only
 };

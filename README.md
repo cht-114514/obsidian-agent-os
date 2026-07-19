@@ -2,7 +2,7 @@
 
 > **Public beta / 测试版** — not a 1.0 release. APIs and vault layout may change.
 
-**Vault-native agent operating system** for [Obsidian](https://obsidian.md): chat UI, soul loops (thoughts / insights / care), digest + confirm gates, optional embedding memory, Grok Build (ACP) or OpenClaw gateway.
+**Vault-native agent operating system** for [Obsidian](https://obsidian.md): chat UI, soul loops (thoughts / insights / care), digest + confirm gates, **vector wiki memory**, Grok Build (ACP) or OpenClaw gateway.
 
 ```
 Vault (Markdown body)  ←→  Obsidian Agent OS (face)  ←→  Grok / OpenClaw (nerve)
@@ -19,10 +19,12 @@ Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS
 | **Insight (心迹)** | `/me-write-insight` → draft + confirm → profile |
 | **Care (牵挂)** | `/me-care-check` + `cares.md` guardrails |
 | **Thoughts (思绪)** | Short `:::thought` blocks in the UI |
-| **Memory** | Keyword `wiki/index.md` + optional hybrid embeddings (`bge-m3` etc.) |
+| **Memory** | **Vector-only** wiki memory (`vectors.jsonl` + embed API; keyword index removed) |
 | **Setup wizard** | First run: name your agent, seed **generic** soul templates |
 | **Active note context** | Auto-attach the open Markdown note (follow / pin / off); digest can use it |
 | **Voice input** | Hold 🎤 → xAI STT (stream / REST) fills the composer |
+
+Wiki **相关记忆** is pure embedding retrieval. Configure Embed API Key, then `/memorized`.
 
 **No author’s personal persona, API keys, or private vault notes are shipped.**  
 You configure identity and keys after install.
@@ -36,7 +38,7 @@ Obsidian Agent OS is an independent open-source project and is **not** affiliate
 
 - Obsidian **1.5+**
 - Desktop: [Grok Build](https://grok.com) CLI (`~/.grok/bin/grok`) **or** OpenClaw HTTP gateway
-- Optional: any OpenAI-compatible **embeddings** API for semantic wiki memory
+- **Required for wiki memory:** OpenAI-compatible **embeddings** API (e.g. DMX + `bge-m3`)
 
 ## Install (from source)
 
@@ -81,7 +83,7 @@ Enable **Obsidian Agent OS** under Obsidian → Settings → Community plugins.
 1. Put existing notes under human zones or `agent-inbox/`
 2. `/me-digest @path` for knowledge wiki
 3. `/me-write-insight …` for stable preferences
-4. `/me-reindex` after digests (keywords + embeddings if configured)
+4. `/memorized` after digests (writes vector memory)
 
 ## Layout
 

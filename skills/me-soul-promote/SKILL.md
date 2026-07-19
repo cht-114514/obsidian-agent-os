@@ -1,25 +1,23 @@
 ---
 name: me-soul-promote
-description: 清洗 insights/reflections/feedback，半自动升格进 Soul/profile/style（确认卡）。
+description: Grok Build 清洗 insights/reflections → pending 升格计划 + 确认卡。
 ---
 
 # me-soul-promote
 
-与 `me-digest` / `me-write-insight` 同级：Grok 扫描 → pending 计划 → Accept 写入。
+## Goal
 
-## 用法
+Promote relationship/self-model material into Soul files **with confirm**.
 
-```
-/me-soul-promote
-```
+## Steps
 
-可选补充说明，例如：`/me-soul-promote 优先处理沟通语气`
+1. Scan:
+   - `agent-inbox/soul/insights/**`
+   - `agent-inbox/soul/feedback/**`
+   - `agent-inbox/wiki/reflections/**`  
+   Skip pure knowledge `wiki/sources` unless clearly preference text.  
+2. Propose ≤8 updates to `profile` / `style` / `soul` (not IDENTITY unless user asks)  
+3. Write `agent-inbox/pending/YYYY-MM-DD-soul-promote.md` including a ```json plan  
+4. Emit `:::confirm type=soul-promote path=...`  
 
-## Accept 语义
-
-写入：
-- `agent-inbox/soul/profile.md`
-- `agent-inbox/soul/style.md`
-- `agent-inbox/soul/SOUL.md`
-
-IDENTITY 不自动改。
+Plugin Accept applies the plan to soul files.

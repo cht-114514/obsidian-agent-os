@@ -118,15 +118,16 @@ daily_cap: 3
 
 Obsidian Agent OS local soul store. Edit freely. Open-source beta ships **templates only**.
 `,
-  'agent-inbox/wiki/index.md': `---
-title: Wiki index
-type: wiki-index
+  'agent-inbox/wiki/README.md': `---
+title: Wiki memory
 managed_by: obsidian-agent-os
 ---
 
-# Wiki Index
+# Wiki
 
-Keyword list. Run \`/me-reindex\` after digests. Optional vectors: \`vectors.jsonl\`.
+- \`sources/\` — digested notes (pending_review → accepted)
+- \`vectors.jsonl\` — **vector memory** (required). Run \`/memorized\` after digests.
+- Keyword \`index.md\` is **deprecated** and removed by \`/memorized\`.
 `,
   'agent-inbox/pending/README.md': `# pending
 

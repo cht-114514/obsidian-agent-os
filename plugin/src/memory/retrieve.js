@@ -1,5 +1,7 @@
 /**
- * Non-vector fuzzy retrieval over wiki index.
+ * Legacy keyword helpers (parse/score). Runtime wiki memory is vector-only
+ * via index-ops.retrieveRelevantMemory → vectors.jsonl. Kept for unit tests
+ * and optional offline tooling.
  */
 
 /**

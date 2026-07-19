@@ -1,8 +1,11 @@
 ---
 name: me-apply-insight
-description: Merge approved insight pending into soul/profile.md + accepted/.
+description: Grok Build 将已确认 insight 合并进 profile。
 ---
 
-```bash
-node "$ME_SOUL_ROOT/skills/me-apply-insight/run.mjs" --pending "agent-inbox/pending/....md" --vault "..."
-```
+# me-apply-insight
+
+1. Resolve insight pending path  
+2. If still `pending`, tell user to Accept the confirm card first  
+3. Append a dated section to `agent-inbox/soul/profile.md`  
+4. Move/copy draft to `insights/accepted/` when appropriate  

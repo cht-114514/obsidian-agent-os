@@ -1,5 +1,6 @@
 /**
- * Vault-backed vector index ops: load/save, reindex path, hybrid retrieve.
+ * Vault-backed vector memory: reindex + pure embedding retrieve.
+ * Keyword index.md is no longer used.
  */
 import { chunkMarkdown } from './chunk.js';
 import { embedTexts, DEFAULT_EMBED_SETTINGS } from './embedder.js';
@@ -10,11 +11,9 @@ import {
   upsertPath,
   removePath,
   searchVectors,
-  mergeHits,
   buildRowsForFile,
   planChunkEmbeds,
 } from './vector-store.js';
-import { parseWikiIndex, retrieveWiki } from './retrieve.js';
 
 /**
  * @param {any} app
@@ -54,6 +53,21 @@ async function vaultWrite(app, rel, content) {
 
 /**
  * @param {any} app
+ * @param {string} rel
+ */
+async function vaultDeleteIfExists(app, rel) {
+  const f = app.vault.getAbstractFileByPath(rel);
+  if (f) {
+    try {
+      await app.vault.delete(f);
+    } catch (e) {
+      console.warn('delete failed', rel, e);
+    }
+  }
+}
+
+/**
+ * @param {any} app
  * @returns {Promise<object[]>}
  */
 export async function loadVectorRows(app) {
@@ -75,13 +89,14 @@ export async function saveVectorRows(app, rows) {
 export function embedConfigFromPlugin(plugin) {
   const s = plugin?.settings || {};
   return {
-    embedEnabled: s.embedEnabled !== false,
+    // Embedding is required for memory retrieve
+    embedEnabled: true,
     embedBaseUrl: s.embedBaseUrl || DEFAULT_EMBED_SETTINGS.embedBaseUrl,
     embedApiKey: s.embedApiKey || '',
     embedModel: s.embedModel || DEFAULT_EMBED_SETTINGS.embedModel,
     embedTopK: s.embedTopK ?? DEFAULT_EMBED_SETTINGS.embedTopK,
     embedMinScore: s.embedMinScore ?? DEFAULT_EMBED_SETTINGS.embedMinScore,
-    retrieveMode: s.retrieveMode || DEFAULT_EMBED_SETTINGS.retrieveMode,
+    retrieveMode: 'vector',
   };
 }
 
@@ -91,11 +106,11 @@ export function embedConfigFromPlugin(plugin) {
  * @param {any} plugin
  * @param {string} wikiPath
  * @param {string} md
- * @param {{ rows?: object[] }} [state] pass rows to avoid reload when batching
+ * @param {{ rows?: object[] }} [state]
  */
 export async function upsertVectorsForPath(app, plugin, wikiPath, md, state = {}) {
   const cfg = embedConfigFromPlugin(plugin);
-  if (!cfg.embedEnabled || !cfg.embedApiKey) {
+  if (!cfg.embedApiKey) {
     return { skipped: true, reason: 'no-key', rows: state.rows };
   }
   if (/wiki_status:\s*pending_review/.test(md || '')) {
@@ -167,22 +182,18 @@ export async function removeVectorsForPath(app, wikiPath, state = {}) {
 }
 
 /**
- * Full rebuild of vectors for a list of { path, md }.
+ * Full rebuild of vectors for accepted wiki sources. Drops legacy index.md.
  * @param {any} app
  * @param {any} plugin
  * @param {{ path: string, md: string }[]} files
  */
 export async function reindexAllVectors(app, plugin, files) {
   const cfg = embedConfigFromPlugin(plugin);
-  if (!cfg.embedEnabled) {
-    return { skipped: true, reason: 'disabled', vectorChunks: 0, embedded: 0 };
-  }
   if (!cfg.embedApiKey) {
     return { skipped: true, reason: 'no-key', vectorChunks: 0, embedded: 0 };
   }
 
   let rows = await loadVectorRows(app);
-  // Drop rows for other models entirely on full reindex of active set? Keep other paths removed if not in files
   const keepPaths = new Set(files.map((f) => f.path));
   rows = rows.filter((r) => keepPaths.has(r.path) && r.model === cfg.embedModel);
 
@@ -194,9 +205,12 @@ export async function reindexAllVectors(app, plugin, files) {
     embedded += res.embedded || 0;
     reused += res.reused || 0;
   }
-  // Remove vectors for paths no longer in sources
   rows = rows.filter((r) => keepPaths.has(r.path));
   await saveVectorRows(app, rows);
+
+  // Keyword index is obsolete — remove if present
+  await vaultDeleteIfExists(app, 'agent-inbox/wiki/index.md');
+
   return {
     ok: true,
     vectorChunks: rows.length,
@@ -207,7 +221,7 @@ export async function reindexAllVectors(app, plugin, files) {
 }
 
 /**
- * Hybrid / keyword / vector retrieval for prompt injection.
+ * Pure vector retrieval for prompt injection (embedding required).
  * @param {any} app
  * @param {any} plugin
  * @param {string} query
@@ -215,82 +229,59 @@ export async function reindexAllVectors(app, plugin, files) {
  */
 export async function retrieveRelevantMemory(app, plugin, query) {
   const cfg = embedConfigFromPlugin(plugin);
-  const mode = cfg.retrieveMode || 'hybrid';
   const topK = cfg.embedTopK ?? 3;
 
-  const indexMd = (await vaultRead(app, 'agent-inbox/wiki/index.md')) || '';
-  const items = parseWikiIndex(indexMd);
-
-  /** @type {object[]} */
-  let keywordHits = [];
-  if (mode !== 'vector') {
-    keywordHits = retrieveWiki(query, items, { topK: 5 });
+  if (!cfg.embedApiKey) {
+    console.warn('retrieveRelevantMemory: no embed API key — skip vector memory');
+    return [];
   }
 
-  /** @type {{ row: object, score: number }[]} */
-  let vectorHits = [];
-  if (mode !== 'keyword' && cfg.embedEnabled && cfg.embedApiKey) {
-    try {
-      const rows = await loadVectorRows(app);
-      const usable = rows.filter((r) => r.model === cfg.embedModel);
-      if (usable.length) {
-        const [qVec] = await embedTexts({
-          baseUrl: cfg.embedBaseUrl,
-          apiKey: cfg.embedApiKey,
-          model: cfg.embedModel,
-          texts: [query],
-        });
-        vectorHits = searchVectors(usable, qVec, {
-          topK: 8,
-          minScore: cfg.embedMinScore,
-          model: cfg.embedModel,
-        });
-      }
-    } catch (e) {
-      console.warn('vector retrieve failed, fallback keyword', e);
-    }
-  }
+  const q = String(query || '').trim();
+  if (!q) return [];
 
-  if (mode === 'keyword' || (!vectorHits.length && keywordHits.length)) {
-    // Enrich keyword hits with file excerpts
+  try {
+    const rows = await loadVectorRows(app);
+    const usable = rows.filter((r) => r.model === cfg.embedModel && Array.isArray(r.embedding));
+    if (!usable.length) return [];
+
+    const [qVec] = await embedTexts({
+      baseUrl: cfg.embedBaseUrl,
+      apiKey: cfg.embedApiKey,
+      model: cfg.embedModel,
+      texts: [q],
+    });
+    if (!qVec?.length) return [];
+
+    const hits = searchVectors(usable, qVec, {
+      topK,
+      minScore: cfg.embedMinScore,
+      model: cfg.embedModel,
+    });
+
+    // Prefer live wiki file excerpt when path still exists; else chunk text
     const out = [];
-    for (const h of keywordHits.slice(0, topK)) {
-      const md = await vaultRead(app, h.path);
-      const excerpt = md
-        ? md.replace(/^---[\s\S]*?---\n/, '').slice(0, 1500)
-        : '';
+    for (const h of hits) {
+      const path = h.row.path;
+      let excerpt = (h.row.text || '').slice(0, 1500);
+      try {
+        const md = await vaultRead(app, path);
+        if (md) {
+          excerpt = md.replace(/^---[\s\S]*?---\n/, '').slice(0, 1500);
+        }
+      } catch {
+        /* keep chunk text */
+      }
       out.push({
-        path: h.path,
-        title: h.title,
+        path,
+        title: h.row.title || path,
         excerpt,
         score: h.score,
-        source: 'keyword',
+        source: 'vector',
       });
     }
     return out;
+  } catch (e) {
+    console.warn('vector retrieve failed', e);
+    return [];
   }
-
-  if (mode === 'vector') {
-    return vectorHits.slice(0, topK).map((h) => ({
-      path: h.row.path,
-      title: h.row.title,
-      excerpt: (h.row.text || '').slice(0, 1500),
-      score: h.score,
-      source: 'vector',
-    }));
-  }
-
-  // hybrid: merge, then fill missing excerpts from vault
-  const merged = mergeHits(keywordHits, vectorHits, { topK });
-  for (const m of merged) {
-    if (!m.excerpt) {
-      const md = await vaultRead(app, m.path);
-      m.excerpt = md
-        ? md.replace(/^---[\s\S]*?---\n/, '').slice(0, 1500)
-        : '';
-    } else {
-      m.excerpt = m.excerpt.slice(0, 1500);
-    }
-  }
-  return merged;
 }
