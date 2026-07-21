@@ -234,7 +234,91 @@ export async function transcribeRest(opts) {
 }
 
 /**
- * Push-to-talk session: capture mic → stream PCM to xAI (or buffer for REST).
+ * Join transcript segments with language-aware spacing.
+ * CJK/CJK-adjacent: no space; Latin/latin-adjacent: single space.
+ * @param {string} a
+ * @param {string} b
+ */
+export function joinSegments(a, b) {
+  const left = String(a || '').trimEnd();
+  const right = String(b || '').trimStart();
+  if (!left) return right;
+  if (!right) return left;
+  const leftEnd = left[left.length - 1];
+  const rightStart = right[0];
+  // CJK Unified Ideographs + common CJK punctuation / kana / hangul ranges
+  const cjk = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/;
+  if (cjk.test(leftEnd) || cjk.test(rightStart)) {
+    return left + right;
+  }
+  if (/\s$/.test(left) || /^\s/.test(right)) return left + right;
+  return `${left} ${right}`;
+}
+
+/**
+ * @typedef {{ committed: string, interim: string }} TranscriptState
+ */
+
+/**
+ * Pure accumulator for xAI streaming STT events.
+ * - interim (is_final=false): replace interim only
+ * - chunk/utterance final (is_final or speech_final): append to committed, clear interim
+ * @param {TranscriptState} state
+ * @param {{ text?: string, is_final?: boolean, speech_final?: boolean, type?: string }} event
+ * @returns {{ state: TranscriptState, display: string }}
+ */
+export function accumulateTranscript(state, event) {
+  const prev = {
+    committed: String(state?.committed || ''),
+    interim: String(state?.interim || ''),
+  };
+  const text = String(event?.text || '').trim();
+  const type = event?.type || 'transcript.partial';
+
+  if (type === 'transcript.done') {
+    const finalText = text || joinSegments(prev.committed, prev.interim);
+    const next = { committed: finalText, interim: '' };
+    return { state: next, display: finalText };
+  }
+
+  // partial / unknown treated as partial
+  if (!text) {
+    return {
+      state: prev,
+      display: joinSegments(prev.committed, prev.interim),
+    };
+  }
+
+  const isFinal = !!(event.is_final || event.speech_final);
+  let next;
+  if (isFinal) {
+    next = {
+      committed: joinSegments(prev.committed, text),
+      interim: '',
+    };
+  } else {
+    next = {
+      committed: prev.committed,
+      interim: text,
+    };
+  }
+  return {
+    state: next,
+    display: joinSegments(next.committed, next.interim),
+  };
+}
+
+/**
+ * Display string from accumulator state.
+ * @param {TranscriptState} state
+ */
+export function displayTranscript(state) {
+  return joinSegments(state?.committed || '', state?.interim || '');
+}
+
+/**
+ * Click-to-talk / PTT session: capture mic → stream PCM to xAI (or buffer for REST).
+ * Streaming finals are *accumulated* so long dictation keeps earlier chunks.
  */
 export class VoiceInputSession {
   /**
@@ -262,8 +346,14 @@ export class VoiceInputSession {
     this._mode = null; // 'ws' | 'rest'
     /** @type {Int16Array[]} */
     this._restChunks = [];
-    this._utterance = '';
+    /** @type {TranscriptState} */
+    this._tx = { committed: '', interim: '' };
     this._closed = false;
+  }
+
+  /** @returns {string} */
+  get _utterance() {
+    return displayTranscript(this._tx);
   }
 
   async start() {
@@ -338,8 +428,9 @@ export class VoiceInputSession {
       sample_rate: '16000',
       encoding: 'pcm',
       interim_results: 'true',
-      smart_turn: '0.65',
-      smart_turn_timeout: '2500',
+      // Slightly more conservative end-of-turn for dictation (fewer false cuts)
+      smart_turn: '0.75',
+      smart_turn_timeout: '3500',
     });
     if (this.language) params.set('language', this.language);
 
@@ -368,37 +459,15 @@ export class VoiceInputSession {
           /* wait for transcript.created */
         });
         ws.on('message', (data) => {
-          let event;
-          try {
-            event = JSON.parse(String(data));
-          } catch {
-            return;
-          }
-          if (event.type === 'transcript.created' && !settled) {
-            settled = true;
-            clearTimeout(timer);
-            resolve(true);
-          }
-          if (event.type === 'transcript.partial') {
-            const text = String(event.text || '').trim();
-            if (text) {
-              this._utterance = text;
-              this.onPartial?.(text, {
-                isFinal: !!event.is_final,
-                speechFinal: !!event.speech_final,
-              });
-            }
-          }
-          if (event.type === 'transcript.done') {
-            const text = String(event.text || this._utterance || '').trim();
-            if (text) {
-              this._utterance = text;
-              this.onFinal?.(text);
-            }
-          }
-          if (event.type === 'error') {
-            this.onError?.(new Error(event.message || 'STT stream error'));
-          }
+          this._handleWsEvent(data, {
+            onReady: () => {
+              if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                resolve(true);
+              }
+            },
+          });
         });
         ws.on('error', () => {
           if (!settled) {
@@ -419,6 +488,51 @@ export class VoiceInputSession {
         resolve(false);
       }
     });
+  }
+
+  /**
+   * @param {any} data
+   * @param {{ onReady?: () => void }} [hooks]
+   */
+  _handleWsEvent(data, hooks = {}) {
+    let event;
+    try {
+      event = JSON.parse(String(data));
+    } catch {
+      return;
+    }
+    if (event.type === 'transcript.created') {
+      hooks.onReady?.();
+      return;
+    }
+    if (event.type === 'transcript.partial') {
+      const { state, display } = accumulateTranscript(this._tx, {
+        type: 'transcript.partial',
+        text: event.text,
+        is_final: event.is_final,
+        speech_final: event.speech_final,
+      });
+      this._tx = state;
+      if (display) {
+        this.onPartial?.(display, {
+          isFinal: !!event.is_final,
+          speechFinal: !!event.speech_final,
+        });
+      }
+      return;
+    }
+    if (event.type === 'transcript.done') {
+      const { state, display } = accumulateTranscript(this._tx, {
+        type: 'transcript.done',
+        text: event.text,
+      });
+      this._tx = state;
+      if (display) this.onFinal?.(display);
+      return;
+    }
+    if (event.type === 'error') {
+      this.onError?.(new Error(event.message || 'STT stream error'));
+    }
   }
 
   /**
@@ -463,18 +577,36 @@ export class VoiceInputSession {
           try {
             const event = JSON.parse(String(data));
             if (event.type === 'transcript.done') {
+              const { state, display } = accumulateTranscript(this._tx, {
+                type: 'transcript.done',
+                text: event.text,
+              });
+              this._tx = state;
               clearTimeout(timeout);
-              finish(event.text || this._utterance);
+              finish(display);
+              return;
             }
-            if (event.type === 'transcript.partial' && event.speech_final) {
-              this._utterance = event.text || this._utterance;
+            if (event.type === 'transcript.partial') {
+              const { state, display } = accumulateTranscript(this._tx, {
+                type: 'transcript.partial',
+                text: event.text,
+                is_final: event.is_final,
+                speech_final: event.speech_final,
+              });
+              this._tx = state;
+              if (display) {
+                this.onPartial?.(display, {
+                  isFinal: !!event.is_final,
+                  speechFinal: !!event.speech_final,
+                });
+              }
             }
           } catch {
             /* */
           }
         });
         try {
-          // Push-to-talk finalize then end stream
+          // xAI PTT: force speech_final, then flush and close
           ws.send(JSON.stringify({ type: 'Finalize' }));
           ws.send(JSON.stringify({ type: 'audio.done' }));
         } catch {

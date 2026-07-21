@@ -5,6 +5,9 @@ import {
   floatTo16BitPCM,
   encodeWav,
   resolveXaiApiKey,
+  joinSegments,
+  accumulateTranscript,
+  displayTranscript,
 } from '../src/voice-stt.js';
 
 describe('voice-stt helpers', () => {
@@ -33,5 +36,132 @@ describe('voice-stt helpers', () => {
   it('resolveXaiApiKey prefers settings', () => {
     const k = resolveXaiApiKey({ xaiApiKey: '  test-key-abc  ' });
     assert.equal(k, 'test-key-abc');
+  });
+});
+
+describe('joinSegments', () => {
+  it('joins Latin with a space', () => {
+    assert.equal(joinSegments('hello', 'world'), 'hello world');
+  });
+
+  it('joins CJK without a space', () => {
+    assert.equal(joinSegments('今天天气', '真不错'), '今天天气真不错');
+  });
+
+  it('joins CJK + Latin sensibly', () => {
+    assert.equal(joinSegments('我说', 'hello'), '我说hello');
+    assert.equal(joinSegments('hello', '世界'), 'hello世界');
+  });
+
+  it('handles empty sides', () => {
+    assert.equal(joinSegments('', 'hi'), 'hi');
+    assert.equal(joinSegments('hi', ''), 'hi');
+  });
+});
+
+describe('accumulateTranscript', () => {
+  it('replaces interim without losing committed', () => {
+    let s = { committed: '第一段', interim: '' };
+    let r = accumulateTranscript(s, {
+      type: 'transcript.partial',
+      text: '临时A',
+      is_final: false,
+    });
+    assert.equal(r.display, '第一段临时A');
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '临时B',
+      is_final: false,
+    });
+    assert.equal(r.state.committed, '第一段');
+    assert.equal(r.display, '第一段临时B');
+  });
+
+  it('accumulates chunk finals across a long dictation', () => {
+    let state = { committed: '', interim: '' };
+    // interim first sentence
+    let r = accumulateTranscript(state, {
+      type: 'transcript.partial',
+      text: '今天我想讨论一下项目进度',
+      is_final: false,
+    });
+    assert.match(r.display, /项目进度/);
+
+    // chunk final locks it
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '今天我想讨论一下项目进度',
+      is_final: true,
+      speech_final: false,
+    });
+    assert.equal(r.state.committed, '今天我想讨论一下项目进度');
+    assert.equal(r.state.interim, '');
+
+    // next interim (would overwrite under the old bug)
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '然后还有预算问题',
+      is_final: false,
+    });
+    assert.equal(r.display, '今天我想讨论一下项目进度然后还有预算问题');
+
+    // second chunk final
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '然后还有预算问题',
+      is_final: true,
+      speech_final: false,
+    });
+    assert.equal(r.state.committed, '今天我想讨论一下项目进度然后还有预算问题');
+
+    // last interim + speech final
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '先这样吧',
+      is_final: false,
+    });
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '先这样吧',
+      is_final: true,
+      speech_final: true,
+    });
+    assert.equal(r.display, '今天我想讨论一下项目进度然后还有预算问题先这样吧');
+    // Old bug would only keep "先这样吧"
+    assert.notEqual(r.display, '先这样吧');
+  });
+
+  it('accumulates Latin chunk finals with spaces', () => {
+    let r = accumulateTranscript(
+      { committed: '', interim: '' },
+      { type: 'transcript.partial', text: 'hello world', is_final: true }
+    );
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: 'and more',
+      is_final: true,
+    });
+    assert.equal(r.display, 'hello world and more');
+  });
+
+  it('transcript.done prefers server text else local join', () => {
+    const local = accumulateTranscript(
+      { committed: '已提交', interim: '未定' },
+      { type: 'transcript.done', text: '' }
+    );
+    assert.equal(local.display, '已提交未定');
+
+    const server = accumulateTranscript(
+      { committed: '已提交', interim: '未定' },
+      { type: 'transcript.done', text: 'server full text' }
+    );
+    assert.equal(server.display, 'server full text');
+  });
+
+  it('displayTranscript joins state', () => {
+    assert.equal(
+      displayTranscript({ committed: 'A', interim: 'B' }),
+      'A B'
+    );
   });
 });

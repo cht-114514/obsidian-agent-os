@@ -119,87 +119,92 @@ export function mountMeSoulChat(containerEl, ctx) {
     schedulePersist();
   }
 
-  // ---------- header ----------
-  const header = shell.createDiv({ cls: 'me-soul-header' });
+  // ---------- floating chrome (overlays scroll log for real glass) ----------
+  const chromeTop = shell.createDiv({ cls: 'me-soul-chrome-top' });
+  // ---------- header (compact: brand + overflow) ----------
+  const header = chromeTop.createDiv({ cls: 'me-soul-header' });
   const brand = header.createDiv({ cls: 'me-soul-brand' });
-  const soulDot = brand.createDiv({ cls: 'me-soul-dot' });
+  brand.createDiv({ cls: 'me-soul-dot' });
   const brandText = brand.createDiv({ cls: 'me-soul-brand-text' });
   const agentName = plugin.settings.agentName || 'Agent';
   brandText.createDiv({ cls: 'me-soul-title', text: agentName });
   const statusEl = brandText.createDiv({ cls: 'me-soul-subtitle', text: '就绪' });
 
-  // Model profile switcher (SuperGrok vs third-party) — always visible on home/sidebar
-  const modelRow = brandText.createDiv({ cls: 'me-soul-model-row' });
-  const modelSelect = modelRow.createEl('select', {
-    cls: 'me-soul-model-select',
-    attr: {
-      'aria-label': '模型配置档',
-      title: '切换 Grok Build 模型 / 第三方 API（不改对话记录）',
-    },
-  });
-  function refreshModelSelect() {
-    const profiles = normalizeGrokProfiles(plugin.settings.grokProfiles);
-    plugin.settings.grokProfiles = profiles;
-    const active = plugin.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
-    modelSelect.empty();
-    for (const p of profiles) {
-      const opt = modelSelect.createEl('option', {
-        text: p.label || p.model || p.id,
-        attr: { value: p.id },
-      });
-      if (p.id === active) opt.selected = true;
-    }
-    const rt = resolveGrokRuntime(plugin.settings);
-    modelSelect.setAttr('title', formatGrokRuntimeLabel(rt));
-  }
-  refreshModelSelect();
-  modelSelect.onchange = async () => {
-    const id = modelSelect.value;
-    if (!id || id === plugin.settings.grokActiveProfile) return;
-    if (busy) {
-      notify('请等当前回复结束后再切换模型');
-      refreshModelSelect();
-      return;
-    }
-    try {
-      const rt = plugin.switchGrokProfile
-        ? await plugin.switchGrokProfile(id)
-        : (() => {
-            plugin.settings.grokActiveProfile = id;
-            return resolveGrokRuntime(plugin.settings);
-          })();
-      refreshModelSelect();
-      setStatus(`模型：${formatGrokRuntimeLabel(rt)}`);
-      notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条消息生效）`);
-    } catch (e) {
-      notify(e?.message || String(e));
-      refreshModelSelect();
-    }
-  };
-
   const tools = header.createDiv({ cls: 'me-soul-header-tools' });
-  const careEl = tools.createDiv({ cls: 'me-soul-care-chip', text: '牵挂' });
-  const newBtn = tools.createEl('button', {
-    cls: 'me-soul-icon-btn',
-    attr: { 'aria-label': '新会话', title: '新会话' },
-    text: '⟳',
+  const careEl = tools.createEl('button', {
+    cls: 'me-soul-care-chip me-soul-care-chip--header',
+    attr: { type: 'button', 'aria-label': '牵挂', title: '牵挂' },
+    text: '牵挂',
   });
-  const quietBtn = tools.createEl('button', {
-    cls: 'me-soul-icon-btn',
-    attr: { 'aria-label': '今日少说话', title: '今日少说话' },
-    text: controller.settings.quiet ? '🌙' : '☀️',
+  // Keep a compact care indicator on the bar; details live in overflow too
+  careEl.style.display = mode === 'home' ? '' : 'none';
+
+  const moreWrap = tools.createDiv({ cls: 'me-soul-more-wrap' });
+  const moreBtn = moreWrap.createEl('button', {
+    cls: 'me-soul-icon-btn me-soul-more-btn',
+    attr: {
+      type: 'button',
+      'aria-label': '更多',
+      'aria-expanded': 'false',
+      title: '会话 · 安静 · 牵挂',
+    },
+    text: '···',
+  });
+  const moreMenu = moreWrap.createDiv({
+    cls: 'me-soul-more-menu',
+    attr: { role: 'menu', 'aria-hidden': 'true' },
+  });
+
+  const menuActions = moreMenu.createDiv({ cls: 'me-soul-menu-actions' });
+  const careMenuBtn = menuActions.createEl('button', {
+    cls: 'me-soul-menu-item',
+    attr: { type: 'button', role: 'menuitem' },
+    text: '牵挂',
+  });
+  const newBtn = menuActions.createEl('button', {
+    cls: 'me-soul-menu-item',
+    attr: { type: 'button', role: 'menuitem' },
+    text: '新会话',
+  });
+  const quietBtn = menuActions.createEl('button', {
+    cls: 'me-soul-menu-item',
+    attr: { type: 'button', role: 'menuitem' },
+    text: controller.settings.quiet ? '今日少说话 · 开' : '今日少说话 · 关',
   });
   quietBtn.toggleClass('is-on', !!controller.settings.quiet);
+
+  function setMoreOpen(open) {
+    moreMenu.toggleClass('is-open', open);
+    moreMenu.setAttr('aria-hidden', open ? 'false' : 'true');
+    moreBtn.setAttr('aria-expanded', open ? 'true' : 'false');
+    moreBtn.toggleClass('is-on', open);
+  }
+  function toggleMore() {
+    setMoreOpen(!moreMenu.hasClass('is-open'));
+  }
+  moreBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    toggleMore();
+  };
+  // Close on outside click
+  const onDocPointer = (ev) => {
+    if (!moreMenu.hasClass('is-open')) return;
+    if (moreWrap.contains(/** @type {Node} */ (ev.target))) return;
+    setMoreOpen(false);
+  };
+  document.addEventListener('pointerdown', onDocPointer, true);
+
   quietBtn.onclick = async () => {
     controller.setQuiet(!controller.settings.quiet);
     plugin.settings.quiet = controller.settings.quiet;
     await plugin.saveSettings();
-    quietBtn.setText(controller.settings.quiet ? '🌙' : '☀️');
+    quietBtn.setText(controller.settings.quiet ? '今日少说话 · 开' : '今日少说话 · 关');
     quietBtn.toggleClass('is-on', controller.settings.quiet);
     logEl.toggleClass('is-quiet', controller.settings.quiet);
     notify(controller.settings.quiet ? '今日少说话：开' : '今日少说话：关');
   };
   newBtn.onclick = async () => {
+    setMoreOpen(false);
     plugin.acp?.resetSession?.();
     try {
       chatSession = await rotateSession(app, chatSession);
@@ -211,6 +216,13 @@ export function mountMeSoulChat(containerEl, ctx) {
     appendWelcome();
     notify('新会话已开启（上一会话已归档）');
   };
+  careMenuBtn.onclick = () => {
+    setMoreOpen(false);
+    const f = app.vault.getAbstractFileByPath('agent-inbox/soul/pending-care.md');
+    if (f) app.workspace.getLeaf(false).openFile(f);
+    else notify('暂无牵挂文件');
+  };
+  careEl.onclick = () => careMenuBtn.onclick?.();
 
   // ---------- active note context ----------
   const activeNoteEnabled = () => plugin.settings.activeNoteContext !== false;
@@ -238,34 +250,65 @@ export function mountMeSoulChat(containerEl, ctx) {
     activeNoteState = setActiveNoteMode(activeNoteState, 'off');
   }
 
-  const contextStrip = shell.createDiv({ cls: 'me-soul-context-strip' });
-  const contextLabel = contextStrip.createDiv({ cls: 'me-soul-context-label' });
-  const contextPathEl = contextStrip.createDiv({
-    cls: 'me-soul-context-path',
-    attr: { title: '点击打开笔记' },
+  // Compact context chip — path + mode; modes live in a popover
+  const contextStrip = chromeTop.createDiv({ cls: 'me-soul-context-strip' });
+  const contextChip = contextStrip.createEl('button', {
+    cls: 'me-soul-context-chip',
+    attr: {
+      type: 'button',
+      title: '当前笔记上下文',
+      'aria-expanded': 'false',
+    },
   });
-  const contextModes = contextStrip.createDiv({ cls: 'me-soul-context-modes' });
-  const btnFollow = contextModes.createEl('button', {
+  const contextModeTag = contextChip.createSpan({ cls: 'me-soul-context-mode-tag', text: '自动' });
+  const contextPathEl = contextChip.createSpan({ cls: 'me-soul-context-path', text: '…' });
+  const contextPopover = contextStrip.createDiv({
+    cls: 'me-soul-context-popover',
+    attr: { role: 'menu', 'aria-hidden': 'true' },
+  });
+  const btnFollow = contextPopover.createEl('button', {
     cls: 'me-soul-context-btn',
-    text: '跟随',
-    attr: { type: 'button', title: '跟随当前打开的笔记' },
+    text: '跟随当前笔记',
+    attr: { type: 'button', role: 'menuitem', title: '跟随当前打开的笔记' },
   });
-  const btnPin = contextModes.createEl('button', {
+  const btnPin = contextPopover.createEl('button', {
     cls: 'me-soul-context-btn',
-    text: '固定',
-    attr: { type: 'button', title: '固定当前笔记，换页不变' },
+    text: '固定此笔记',
+    attr: { type: 'button', role: 'menuitem', title: '固定当前笔记，换页不变' },
   });
-  const btnOff = contextModes.createEl('button', {
+  const btnOff = contextPopover.createEl('button', {
     cls: 'me-soul-context-btn',
-    text: '关闭',
-    attr: { type: 'button', title: '本会话不自动附带' },
+    text: '关闭自动上下文',
+    attr: { type: 'button', role: 'menuitem', title: '本会话不自动附带' },
   });
+  const btnOpenNote = contextPopover.createEl('button', {
+    cls: 'me-soul-context-btn me-soul-context-btn--secondary',
+    text: '打开笔记',
+    attr: { type: 'button', role: 'menuitem' },
+  });
+
+  function setContextOpen(open) {
+    contextPopover.toggleClass('is-open', open);
+    contextPopover.setAttr('aria-hidden', open ? 'false' : 'true');
+    contextChip.setAttr('aria-expanded', open ? 'true' : 'false');
+    contextChip.toggleClass('is-open', open);
+  }
+  contextChip.onclick = (ev) => {
+    ev.stopPropagation();
+    setContextOpen(!contextPopover.hasClass('is-open'));
+  };
+  const onDocContext = (ev) => {
+    if (!contextPopover.hasClass('is-open')) return;
+    if (contextStrip.contains(/** @type {Node} */ (ev.target))) return;
+    setContextOpen(false);
+  };
+  document.addEventListener('pointerdown', onDocContext, true);
 
   function paintContextStrip() {
     if (!activeNoteEnabled()) {
       contextStrip.addClass('is-disabled');
-      contextLabel.setText('当前笔记');
-      contextPathEl.setText('（设置中已关闭自动上下文）');
+      contextModeTag.setText('关');
+      contextPathEl.setText('设置中已关闭');
       btnFollow.removeClass('is-on');
       btnPin.removeClass('is-on');
       btnOff.addClass('is-on');
@@ -273,24 +316,25 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
     contextStrip.removeClass('is-disabled');
     const path = getEffectiveActivePath(activeNoteState);
-    const mode = activeNoteState.mode;
-    btnFollow.toggleClass('is-on', mode === 'follow');
-    btnPin.toggleClass('is-on', mode === 'pin');
-    btnOff.toggleClass('is-on', mode === 'off');
-    if (mode === 'off') {
-      contextLabel.setText('当前笔记 · 关');
-      contextPathEl.setText('发送时不自动附带');
+    const noteMode = activeNoteState.mode;
+    btnFollow.toggleClass('is-on', noteMode === 'follow');
+    btnPin.toggleClass('is-on', noteMode === 'pin');
+    btnOff.toggleClass('is-on', noteMode === 'off');
+    if (noteMode === 'off') {
+      contextModeTag.setText('关');
+      contextPathEl.setText('不附带笔记');
+      contextStrip.removeClass('has-note');
       return;
     }
-    contextLabel.setText(mode === 'pin' ? '当前笔记 · 固定' : '当前笔记 · 自动');
+    contextModeTag.setText(noteMode === 'pin' ? '固定' : '自动');
     if (path) {
-      contextPathEl.setText(path);
-      contextPathEl.setAttr('title', path);
+      contextPathEl.setText(shortName(path));
+      contextChip.setAttr('title', path);
       contextStrip.addClass('has-note');
       contextStrip.addClass('is-flash');
       window.setTimeout(() => contextStrip.removeClass('is-flash'), 280);
     } else {
-      contextPathEl.setText('（打开一篇 Markdown 笔记）');
+      contextPathEl.setText('打开一篇笔记');
       contextStrip.removeClass('has-note');
     }
   }
@@ -331,6 +375,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     activeNoteState = setActiveNoteMode(activeNoteState, 'follow');
     plugin.settings.activeNoteMode = 'follow';
     plugin.saveSettings?.();
+    setContextOpen(false);
     syncActiveFromWorkspace();
   };
   btnPin.onclick = () => {
@@ -343,17 +388,23 @@ export function mountMeSoulChat(containerEl, ctx) {
     plugin.settings.activeNoteMode = 'pin';
     plugin.settings.activeNotePinnedPath = getEffectiveActivePath(activeNoteState);
     plugin.saveSettings?.();
+    setContextOpen(false);
     paintContextStrip();
   };
   btnOff.onclick = () => {
     activeNoteState = setActiveNoteMode(activeNoteState, 'off');
     plugin.settings.activeNoteMode = 'off';
     plugin.saveSettings?.();
+    setContextOpen(false);
     paintContextStrip();
   };
-  contextPathEl.onclick = () => {
+  btnOpenNote.onclick = () => {
+    setContextOpen(false);
     const p = getEffectiveActivePath(activeNoteState);
-    if (!p) return;
+    if (!p) {
+      notify('没有可打开的笔记');
+      return;
+    }
     const f = app.vault.getAbstractFileByPath(p);
     if (f) app.workspace.getLeaf(false).openFile(f);
   };
@@ -362,38 +413,117 @@ export function mountMeSoulChat(containerEl, ctx) {
   const unsubOpen = app.workspace.on?.('file-open', () => syncActiveFromWorkspace());
   syncActiveFromWorkspace();
 
-  // ---------- log ----------
+  // ---------- log (full-bleed under floating chrome) ----------
   const logEl = shell.createDiv({ cls: 'me-soul-log' });
   logEl.toggleClass('is-quiet', !!controller.settings.quiet);
 
-  // ---------- composer ----------
+  // ---------- composer (liquid glass bar) ----------
   const composer = shell.createDiv({ cls: 'me-soul-composer' });
   const suggestEl = composer.createDiv({ cls: 'me-soul-suggest' });
   suggestEl.style.display = 'none';
 
   const chipsEl = composer.createDiv({ cls: 'me-soul-chips' });
-  const inputWrap = composer.createDiv({ cls: 'me-soul-input-wrap' });
+  // Single liquid-glass capsule: input + model + mic + send
+  const glass = composer.createDiv({ cls: 'me-soul-glass' });
+  const inputWrap = glass.createDiv({ cls: 'me-soul-input-wrap' });
   const skillPillEl = inputWrap.createDiv({ cls: 'me-soul-active-skill' });
   const inputEl = inputWrap.createEl('textarea', {
     cls: 'me-soul-input',
     attr: {
       rows: '1',
-      placeholder: `跟${agentName}说…   @ 引用笔记 · / 技能 · 粘贴文件入 raw · 按住 🎤`,
+      placeholder: `跟${agentName}说…  @笔记  /技能  ·  点击 🎤`,
     },
   });
-  const row = composer.createDiv({ cls: 'me-soul-composer-row' });
-  const hintEl = row.createDiv({ cls: 'me-soul-status' });
-  const actionsEl = row.createDiv({ cls: 'me-soul-composer-actions' });
+  const actionsEl = glass.createDiv({ cls: 'me-soul-composer-actions' });
+  const hintEl = glass.createDiv({ cls: 'me-soul-status' });
+  hintEl.addClass('is-empty');
+  // Model next to mic (compact select)
+  const modelSelect = actionsEl.createEl('select', {
+    cls: 'me-soul-model-select me-soul-model-select--composer',
+    attr: {
+      'aria-label': '模型配置档',
+      title: '切换 Grok Build 模型 / 第三方 API',
+    },
+  });
   const micBtn = actionsEl.createEl('button', {
     cls: 'me-soul-mic',
     attr: {
       type: 'button',
-      'aria-label': '按住说话',
-      title: '按住说话（xAI STT）· 松手填入输入框',
+      'aria-label': '点击开始说话',
+      title: '点击开始 / 再点结束（xAI 流式语音）',
+      'aria-pressed': 'false',
     },
     text: '🎤',
   });
   const sendBtn = actionsEl.createEl('button', { cls: 'me-soul-send', text: '↑' });
+
+  // Keep log padding in sync so messages can scroll *under* glass (iOS Liquid Glass)
+  function syncChromeInsets() {
+    try {
+      const top = Math.ceil(chromeTop.getBoundingClientRect().height || 0);
+      const bottom = Math.ceil(composer.getBoundingClientRect().height || 0);
+      logEl.style.paddingTop = `${Math.max(top, 48)}px`;
+      logEl.style.paddingBottom = `${Math.max(bottom, 72)}px`;
+      shell.style.setProperty('--ms-chrome-top', `${top}px`);
+      shell.style.setProperty('--ms-chrome-bottom', `${bottom}px`);
+    } catch {
+      /* */
+    }
+  }
+  let chromeRo = null;
+  try {
+    if (typeof ResizeObserver !== 'undefined') {
+      chromeRo = new ResizeObserver(() => syncChromeInsets());
+      chromeRo.observe(chromeTop);
+      chromeRo.observe(composer);
+      chromeRo.observe(glass);
+    }
+  } catch {
+    /* */
+  }
+  // first paint + after fonts
+  requestAnimationFrame(syncChromeInsets);
+  setTimeout(syncChromeInsets, 50);
+
+  function refreshModelSelect() {
+    const profiles = normalizeGrokProfiles(plugin.settings.grokProfiles);
+    plugin.settings.grokProfiles = profiles;
+    const active = plugin.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
+    modelSelect.empty();
+    for (const p of profiles) {
+      const opt = modelSelect.createEl('option', {
+        text: p.label || p.model || p.id,
+        attr: { value: p.id },
+      });
+      if (p.id === active) opt.selected = true;
+    }
+    const rt = resolveGrokRuntime(plugin.settings);
+    modelSelect.setAttr('title', formatGrokRuntimeLabel(rt));
+  }
+  refreshModelSelect();
+  modelSelect.onchange = async () => {
+    const id = modelSelect.value;
+    if (!id || id === plugin.settings.grokActiveProfile) return;
+    if (busy) {
+      notify('请等当前回复结束后再切换模型');
+      refreshModelSelect();
+      return;
+    }
+    try {
+      const rt = plugin.switchGrokProfile
+        ? await plugin.switchGrokProfile(id)
+        : (() => {
+            plugin.settings.grokActiveProfile = id;
+            return resolveGrokRuntime(plugin.settings);
+          })();
+      refreshModelSelect();
+      setStatus(`模型：${formatGrokRuntimeLabel(rt)}`);
+      notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条消息生效）`);
+    } catch (e) {
+      notify(e?.message || String(e));
+      refreshModelSelect();
+    }
+  };
 
   /** @type {VoiceInputSession | null} */
   let voiceSession = null;
@@ -402,6 +532,11 @@ export function mountMeSoulChat(containerEl, ctx) {
 
   function setStatus(t) {
     statusEl.setText(t);
+  }
+  function setHint(t) {
+    const text = String(t || '').trim();
+    hintEl.setText(text);
+    hintEl.toggleClass('is-empty', !text);
   }
   function setBusy(b) {
     busy = b;
@@ -418,7 +553,11 @@ export function mountMeSoulChat(containerEl, ctx) {
   function setVoiceUi(on) {
     voiceListening = on;
     micBtn.toggleClass('is-listening', on);
+    micBtn.setAttr('aria-pressed', on ? 'true' : 'false');
+    micBtn.setAttr('aria-label', on ? '点击结束说话' : '点击开始说话');
+    micBtn.setAttr('title', on ? '点击结束 · Esc 取消' : '点击开始 / 再点结束（xAI 流式语音）');
     composer.toggleClass('is-voice-listening', on);
+    glass.toggleClass('is-voice-listening', on);
     shell.toggleClass('is-voice-listening', on);
   }
 
@@ -439,7 +578,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       apiKey,
       language: plugin.settings.voiceLanguage || '',
       onStatus: (s) => {
-        hintEl.setText(s);
+        setHint(s);
         if (s.includes('聆听') || s.includes('麦克风')) setStatus('听…');
       },
       onPartial: (text) => {
@@ -452,7 +591,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       onError: (err) => {
         notify(err?.message || String(err));
         setStatus('就绪');
-        hintEl.setText('');
+        setHint('');
       },
     });
     voiceSession = session;
@@ -464,7 +603,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       voiceSession = null;
       notify(e?.message || String(e));
       setStatus('就绪');
-      hintEl.setText('');
+      setHint('');
     }
   }
 
@@ -484,7 +623,6 @@ export function mountMeSoulChat(containerEl, ctx) {
         inputEl.value = joined;
         autoGrow();
         if (sendAfter && plugin.settings.voiceAutoSend) {
-          // defer so UI settles
           setTimeout(() => send(), 30);
         }
       }
@@ -493,7 +631,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     } finally {
       setVoiceUi(false);
       setStatus('就绪');
-      hintEl.setText('');
+      setHint('');
       inputEl.focus();
     }
   }
@@ -504,31 +642,36 @@ export function mountMeSoulChat(containerEl, ctx) {
       voiceSession = null;
     }
     setVoiceUi(false);
-    hintEl.setText('');
+    setHint('');
     setStatus('就绪');
   }
 
-  // Push-to-talk: press & hold
-  micBtn.addEventListener('pointerdown', (ev) => {
-    if (ev.button != null && ev.button !== 0) return;
+  // Click-to-talk toggle (not press-and-hold)
+  micBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
-    try {
-      micBtn.setPointerCapture(ev.pointerId);
-    } catch {
-      /* */
-    }
-    startVoice();
+    if (voiceListening) stopVoice(!!plugin.settings.voiceAutoSend);
+    else startVoice();
   });
-  micBtn.addEventListener('pointerup', (ev) => {
-    ev.preventDefault();
-    stopVoice(false);
-  });
-  micBtn.addEventListener('pointercancel', () => cancelVoice());
-  micBtn.addEventListener('lostpointercapture', () => {
-    if (voiceListening) stopVoice(false);
-  });
-  // Prevent focus steal / context menu noise
   micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Esc cancels listening or closes menus
+  shell.tabIndex = -1;
+  const onKeyDown = (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (voiceListening) {
+      ev.preventDefault();
+      cancelVoice();
+      notify('已取消语音输入');
+      return;
+    }
+    if (moreMenu.hasClass('is-open')) {
+      setMoreOpen(false);
+      return;
+    }
+    if (contextPopover.hasClass('is-open')) setContextOpen(false);
+  };
+  shell.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keydown', onKeyDown);
 
   // ---------- chips ----------
   function renderChips() {
@@ -677,34 +820,19 @@ export function mountMeSoulChat(containerEl, ctx) {
   function appendWelcome() {
     const w = logEl.createDiv({ cls: 'me-soul-msg me-soul-agent me-soul-welcome' });
     const body = w.createDiv({ cls: 'me-soul-msg-body' });
-    const engineName = plugin.settings.engine === 'openclaw' ? 'OpenClaw' : 'Grok Build';
-    const rt =
-      plugin.settings.engine === 'openclaw'
-        ? null
-        : resolveGrokRuntime(plugin.settings);
     const mobile =
       typeof navigator !== 'undefined' &&
       /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
-    body.createDiv({
-      cls: 'me-soul-text me-soul-welcome-hero',
-      text: 'Vault 是身体，我是神经。',
-    });
-    body.createDiv({
-      cls: 'me-soul-text me-soul-welcome-sub',
-      text: rt
-        ? `内核 ${engineName} · ${formatGrokRuntimeLabel(rt)} · 人区要你点头`
-        : `内核 ${engineName} · 消化进 agent-inbox · 人区要你点头`,
-    });
+    const tips = body.createDiv({ cls: 'me-soul-welcome-tips' });
+    for (const t of ['@ 引用笔记', '/ 技能', '粘贴文件 → raw', '点击 🎤 说话']) {
+      tips.createSpan({ cls: 'me-soul-tip', text: t });
+    }
     if (mobile) {
       body.createDiv({
         cls: 'me-soul-text me-soul-mobile-note',
         text:
-          '📱 手机端：可看对话台、用本地 vault 技能（写心迹/重建索引等）。本地 Grok 内核需电脑；若要手机对话，请在设置改为 OpenClaw Gateway（HTTP）并保证能连上。',
+          '手机端可看对话与本地技能；本地 Grok 需电脑。手机对话请在设置改用 OpenClaw Gateway。',
       });
-    }
-    const tips = body.createDiv({ cls: 'me-soul-welcome-tips' });
-    for (const t of ['@ 引用笔记', '/ 技能', '粘贴文件 → raw', '👍👎 喂我成长']) {
-      tips.createSpan({ cls: 'me-soul-tip', text: t });
     }
   }
 
@@ -1302,6 +1430,19 @@ export function mountMeSoulChat(containerEl, ctx) {
       try {
         if (unsubOpen && app.workspace.offref) app.workspace.offref(unsubOpen);
         else if (unsubOpen) app.workspace.off?.('file-open', unsubOpen);
+      } catch {
+        /* */
+      }
+      try {
+        document.removeEventListener('pointerdown', onDocPointer, true);
+        document.removeEventListener('pointerdown', onDocContext, true);
+        document.removeEventListener('keydown', onKeyDown);
+        shell.removeEventListener('keydown', onKeyDown);
+      } catch {
+        /* */
+      }
+      try {
+        chromeRo?.disconnect?.();
       } catch {
         /* */
       }

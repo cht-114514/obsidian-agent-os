@@ -1,42 +1,80 @@
 /* ============================================================
-   Obsidian Agent OS — Apple Design materials (emilkowalski/apple-design)
-   Translucent chrome, press-down feedback, size-aware type,
-   critically-damped motion. Light/dark via Obsidian variables.
+   Obsidian Agent OS — clean light UI + light liquid glass
+   Chrome overlays the scroll log so content can pass underneath.
+   Palette is self-contained (not theme-yellow / not neon teal).
    ============================================================ */
 
 .me-soul-panel {
-  --ms-accent: var(--interactive-accent);
-  --ms-accent-soft: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
-  --ms-accent-line: color-mix(in srgb, var(--interactive-accent) 32%, transparent);
-  --ms-accent-mid: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
-  --ms-hairline: color-mix(in srgb, var(--text-muted) 14%, transparent);
-  --ms-hairline-strong: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  /*
+   * Content ink is ALWAYS solid opaque.
+   * Transparency lives only on glass *materials* (composer / chips / menus),
+   * never on message text — see Liquid Glass: glass is a surface behind content.
+   */
+  --ms-ink: #1c1c1e;
+  --ms-ink-secondary: #3a3a3c;
+  --ms-muted: #6b6b70;
+  --ms-faint: #8e8e93;
+  --ms-surface: #ffffff;
+  --ms-surface-soft: #f5f5f7;
+  --ms-surface-chip: #eef0f3;
+  --ms-line: rgba(0, 0, 0, 0.08);
+  --ms-line-strong: rgba(0, 0, 0, 0.12);
 
-  --ms-radius: 18px;
+  /* Quiet purple accent — matches Obsidian */
+  --ms-accent: #8b5cf6;
+  --ms-accent-soft: rgba(139, 92, 246, 0.1);
+  --ms-accent-line: rgba(139, 92, 246, 0.28);
+  --ms-accent-mid: rgba(139, 92, 246, 0.16);
+  --ms-hairline: var(--ms-line);
+  --ms-hairline-strong: var(--ms-line-strong);
+
+  --ms-radius: 16px;
   --ms-radius-sm: 12px;
   --ms-radius-xs: 8px;
   --ms-radius-pill: 999px;
 
-  --ms-material: color-mix(in srgb, var(--background-primary) 68%, transparent);
-  --ms-material-heavy: color-mix(in srgb, var(--background-primary) 86%, transparent);
-  --ms-material-elevated: color-mix(in srgb, var(--background-primary) 78%, transparent);
-  --ms-blur: 22px;
-  --ms-blur-sm: 14px;
+  /*
+   * Glass material only (iOS .glassEffect(.regular) web approx):
+   * moderate fill + light blur so content under chrome shows through.
+   * Do NOT apply these tokens to text nodes.
+   */
+  --ms-glass-fill: rgba(255, 255, 255, 0.32);
+  --ms-glass-fill-strong: rgba(255, 255, 255, 0.5);
+  --ms-material: rgba(255, 255, 255, 0.5);
+  --ms-material-heavy: rgba(255, 255, 255, 0.82);
+  --ms-material-elevated: rgba(255, 255, 255, 0.9);
+  --ms-blur: 16px;
+  --ms-blur-sm: 12px;
 
-  --ms-shadow: 0 10px 40px color-mix(in srgb, black 10%, transparent),
-    0 1px 0 color-mix(in srgb, white 6%, transparent) inset;
-  --ms-shadow-sm: 0 4px 18px color-mix(in srgb, black 8%, transparent);
-  --ms-shadow-press: 0 1px 4px color-mix(in srgb, black 10%, transparent);
+  --ms-shadow: 0 8px 28px rgba(0, 0, 0, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.65) inset;
+  --ms-shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.06);
+  --ms-shadow-press: 0 1px 3px rgba(0, 0, 0, 0.08);
 
-  /* Apple-ish settle (critically damped feel, no overshoot) */
   --ms-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --ms-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ms-press: 90ms ease-out;
-  --ms-duration: 0.36s;
+  --ms-duration: 0.32s;
   --ms-duration-fast: 0.18s;
 
   font-family: var(--font-interface), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* Solid content color — never translucent */
+  color: var(--ms-ink);
+  background: var(--ms-surface-soft);
+}
+
+/* Kill Obsidian theme text vars leaking light-on-light into messages */
+.me-soul-panel,
+.me-soul-panel .me-soul-log,
+.me-soul-panel .me-soul-msg,
+.me-soul-panel .me-soul-msg-body,
+.me-soul-panel .me-soul-text,
+.me-soul-panel .me-soul-stream-text,
+.me-soul-panel .me-soul-agent,
+.me-soul-panel .me-soul-user {
+  color: var(--ms-ink);
+  opacity: 1;
 }
 
 /* ---------- host / homepage embed ---------- */
@@ -85,31 +123,77 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 .me-soul-panel-sidebar {
   height: 100%;
   min-height: 100%;
+  /* Density tokens for narrow right sidebar */
+  --ms-chrome-pad-x: 12px;
+  --ms-chrome-pad-y: 10px;
 }
 
-/* ---------- shell ---------- */
+.me-soul-panel-home {
+  --ms-chrome-pad-x: 16px;
+  --ms-chrome-pad-y: 12px;
+}
+
+/* ---------- shell: stage for overlay chrome ---------- */
 
 .me-soul-shell {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: block;
   height: 100%;
   overflow: hidden;
   border-radius: var(--ms-radius);
-  background: color-mix(in srgb, var(--background-primary) 55%, transparent);
-  border: 1px solid var(--ms-hairline);
-  box-shadow: var(--ms-shadow-sm);
+  background: var(--ms-surface-soft);
+  border: 1px solid var(--ms-line);
+  box-shadow: none;
+  isolation: isolate;
 }
 
-/* Catch light on the material edge */
-.me-soul-shell::before {
-  content: '';
-  pointer-events: none;
+.me-soul-panel-sidebar .me-soul-shell {
+  border-radius: 0;
+  border: none;
+  background: var(--ms-surface-soft);
+}
+
+/* Full-bleed scroll layer — content physically passes under chrome */
+.me-soul-log {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
-  z-index: 2;
+  z-index: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* padding-top/bottom set by JS (ResizeObserver) so last msgs stay readable */
+  padding-left: 4px;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+}
+
+.me-soul-panel-sidebar .me-soul-log {
+  gap: 14px;
+}
+
+/* Floating top chrome (header + context) */
+.me-soul-chrome-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(245, 245, 247, 0.55) 0%,
+    transparent 100%
+  );
+}
+
+.me-soul-chrome-top > * {
+  pointer-events: auto;
 }
 
 /* ---------- header (translucent chrome) ---------- */
@@ -120,29 +204,19 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px 12px;
-  background: var(--ms-material);
-  backdrop-filter: blur(var(--ms-blur)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--ms-blur)) saturate(180%);
+  gap: 10px;
+  padding: var(--ms-chrome-pad-y, 12px) var(--ms-chrome-pad-x, 16px) 4px;
+  background: transparent;
   border-bottom: none;
   flex-shrink: 0;
 }
 
-/* Scroll-edge fade instead of a hard divider */
+.me-soul-panel-sidebar .me-soul-header {
+  padding: 10px 12px 4px;
+}
+
 .me-soul-header::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -16px;
-  height: 16px;
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--background-primary) 45%, transparent),
-    transparent
-  );
+  display: none;
 }
 
 .me-soul-brand {
@@ -154,8 +228,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 /* Breathing soul dot — restrained pulse */
 .me-soul-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--ms-accent);
   box-shadow: 0 0 0 0 var(--ms-accent-soft);
@@ -169,48 +243,46 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 @keyframes me-soul-breathe {
   0%, 100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--interactive-accent) 40%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ms-accent) 40%, transparent);
     opacity: 0.88;
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 7px transparent;
+    box-shadow: 0 0 0 6px transparent;
     opacity: 1;
-    transform: scale(1.08);
+    transform: scale(1.06);
   }
 }
 
 .me-soul-title {
   font-weight: 600;
-  font-size: 1.05rem;
+  font-size: 0.98rem;
   letter-spacing: -0.022em;
   line-height: 1.15;
-  color: var(--text-normal);
+  color: var(--ms-ink);
+}
+
+.me-soul-panel-sidebar .me-soul-title {
+  font-size: 0.92rem;
 }
 
 .me-soul-subtitle {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   letter-spacing: 0.01em;
-  color: var(--text-faint);
-  line-height: 1.35;
+  color: var(--ms-muted);
+  line-height: 1.3;
   margin-top: 1px;
 }
 
-.me-soul-model-row {
-  margin-top: 4px;
-  min-width: 0;
-  max-width: 100%;
-}
-
 .me-soul-model-select {
-  max-width: min(220px, 42vw);
-  width: auto;
-  font-size: 0.72rem;
+  width: 100%;
+  max-width: 100%;
+  font-size: 0.78rem;
   letter-spacing: 0.01em;
   line-height: 1.3;
-  padding: 2px 22px 2px 8px;
-  border-radius: var(--ms-radius-pill, 999px);
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 85%, transparent);
+  padding: 7px 28px 7px 10px;
+  border-radius: var(--ms-radius-xs);
+  border: 1px solid var(--ms-hairline-strong);
   background: color-mix(in srgb, var(--background-secondary) 88%, transparent);
   color: var(--text-muted);
   cursor: pointer;
@@ -227,15 +299,107 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
     5px 5px;
   background-repeat: no-repeat;
   transition:
-    border-color 0.15s ease,
-    color 0.15s ease,
-    background-color 0.15s ease;
+    border-color var(--ms-duration-fast) var(--ms-ease),
+    color var(--ms-duration-fast) var(--ms-ease),
+    background-color var(--ms-duration-fast) var(--ms-ease);
 }
 
 .me-soul-model-select:hover,
 .me-soul-model-select:focus {
   color: var(--text-normal);
-  border-color: color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
+  border-color: var(--ms-accent-line);
+}
+
+/* ---------- overflow menu (···) ---------- */
+
+.me-soul-more-wrap {
+  position: relative;
+}
+
+.me-soul-more-btn {
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.me-soul-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  max-width: min(280px, 86vw);
+  padding: 8px;
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-line);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(var(--ms-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--ms-blur)) saturate(140%);
+  box-shadow: var(--ms-shadow);
+  z-index: 40;
+  transform-origin: top right;
+  opacity: 0;
+  transform: scale(0.94) translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity var(--ms-duration-fast) var(--ms-ease),
+    transform var(--ms-duration) var(--ms-ease);
+}
+
+.me-soul-more-menu.is-open {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
+}
+
+.me-soul-menu-section {
+  padding: 4px 4px 8px;
+}
+
+.me-soul-menu-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 0 2px 6px;
+}
+
+.me-soul-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--ms-hairline);
+  padding-top: 6px;
+}
+
+.me-soul-menu-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--ms-radius-xs);
+  font-size: 0.84rem;
+  letter-spacing: -0.01em;
+  color: var(--ms-ink);
+  cursor: pointer;
+  transition:
+    background var(--ms-press),
+    transform var(--ms-press),
+    color var(--ms-duration-fast) var(--ms-ease);
+}
+
+.me-soul-menu-item:hover {
+  background: var(--ms-accent-soft);
+}
+
+.me-soul-menu-item:active {
+  transform: scale(0.98);
+}
+
+.me-soul-menu-item.is-on {
+  color: var(--ms-accent);
+  font-weight: 550;
 }
 
 /* ---------- Settings tab hierarchy ---------- */
@@ -328,8 +492,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-settings-badge.is-on {
-  color: var(--text-on-accent, #fff);
-  background: var(--interactive-accent);
+  color: #fff;
+  background: var(--ms-accent, #8b5cf6);
   border-color: transparent;
 }
 
@@ -396,8 +560,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-profile-box.is-active {
-  border-color: color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--ms-accent, #8b5cf6) 45%, var(--background-modifier-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ms-accent, #8b5cf6) 18%, transparent);
 }
 
 .me-soul-profile-head {
@@ -454,7 +618,7 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   line-height: 1;
   padding: 7px 8px;
   border-radius: var(--ms-radius-xs);
-  color: var(--text-muted);
+  color: var(--ms-muted);
   transition:
     background var(--ms-duration-fast) var(--ms-ease),
     color var(--ms-duration-fast) var(--ms-ease),
@@ -462,8 +626,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-icon-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--ms-ink);
 }
 
 .me-soul-icon-btn:active {
@@ -476,75 +640,138 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   background: var(--ms-accent-soft);
 }
 
-/* ---------- active note context strip ---------- */
+/* ---------- active note context (compact chip + popover) ---------- */
 
 .me-soul-context-strip {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 16px;
+  gap: 8px;
+  padding: 2px var(--ms-chrome-pad-x, 14px) 8px;
   z-index: 3;
-  background: var(--ms-material);
-  backdrop-filter: blur(var(--ms-blur-sm)) saturate(160%);
-  -webkit-backdrop-filter: blur(var(--ms-blur-sm)) saturate(160%);
-  border-bottom: 1px solid var(--ms-hairline);
   flex-shrink: 0;
-  transition: background var(--ms-duration-fast) var(--ms-ease);
+  background: transparent;
 }
 
-.me-soul-context-strip.is-flash {
+.me-soul-panel-sidebar .me-soul-context-strip {
+  padding: 0 12px 6px;
+}
+
+.me-soul-context-strip.is-flash .me-soul-context-chip {
   background: var(--ms-accent-soft);
+  border-color: var(--ms-accent-line);
 }
 
 .me-soul-context-strip.is-disabled {
   opacity: 0.72;
 }
 
-.me-soul-context-label {
-  font-size: 0.7rem;
+.me-soul-context-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 10px 4px 6px;
+  border-radius: var(--ms-radius-pill);
+  border: 1px solid var(--ms-line);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(var(--ms-blur-sm)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--ms-blur-sm)) saturate(140%);
+  color: var(--ms-muted);
+  cursor: pointer;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  transition:
+    background var(--ms-duration-fast) var(--ms-ease),
+    border-color var(--ms-duration-fast) var(--ms-ease),
+    transform var(--ms-press),
+    box-shadow var(--ms-duration-fast) var(--ms-ease);
+}
+
+.me-soul-context-chip:hover {
+  border-color: var(--ms-line-strong);
+  color: var(--ms-ink);
+}
+
+.me-soul-context-chip:active {
+  transform: scale(0.97);
+}
+
+.me-soul-context-chip.is-open {
+  border-color: var(--ms-accent-line);
+  box-shadow: 0 0 0 3px var(--ms-accent-soft);
+}
+
+.me-soul-context-mode-tag {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-faint);
-  flex-shrink: 0;
-  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--ms-radius-pill);
+  background: var(--ms-accent-soft);
+  color: var(--ms-accent);
+  line-height: 1.3;
 }
 
 .me-soul-context-path {
-  flex: 1;
   min-width: 0;
-  font-size: 0.82rem;
-  color: var(--text-muted);
+  font-size: 0.78rem;
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
-  letter-spacing: -0.01em;
 }
 
 .me-soul-context-strip.has-note .me-soul-context-path {
-  color: var(--text-normal);
+  color: var(--ms-ink);
 }
 
-.me-soul-context-path:hover {
-  color: var(--ms-accent);
-}
-
-.me-soul-context-modes {
+.me-soul-context-popover {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: var(--ms-chrome-pad-x, 14px);
+  min-width: 180px;
+  max-width: min(260px, 90%);
+  padding: 6px;
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-line);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(var(--ms-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--ms-blur)) saturate(140%);
+  box-shadow: var(--ms-shadow);
+  z-index: 35;
   display: flex;
-  gap: 4px;
-  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
+  transform-origin: top left;
+  opacity: 0;
+  transform: scale(0.94) translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity var(--ms-duration-fast) var(--ms-ease),
+    transform var(--ms-duration) var(--ms-ease);
+}
+
+.me-soul-context-popover.is-open {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
 }
 
 .me-soul-context-btn {
   appearance: none;
   cursor: pointer;
-  border: 1px solid var(--ms-hairline);
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-faint);
-  font-size: 0.72rem;
-  padding: 3px 9px;
-  border-radius: var(--ms-radius-pill);
+  color: var(--ms-muted);
+  font-size: 0.8rem;
+  letter-spacing: -0.01em;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--ms-radius-xs);
   transition:
     background var(--ms-duration-fast) var(--ms-ease),
     color var(--ms-duration-fast) var(--ms-ease),
@@ -552,8 +779,12 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-context-btn:hover {
-  color: var(--text-normal);
-  border-color: var(--ms-hairline-strong);
+  color: var(--ms-ink);
+  border-color: var(--ms-line-strong);
+}
+
+.me-soul-context-btn:active {
+  transform: scale(0.98);
 }
 
 .me-soul-context-btn.is-on {
@@ -563,33 +794,32 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-weight: 600;
 }
 
+.me-soul-context-btn--secondary {
+  color: var(--text-faint);
+  font-size: 0.76rem;
+  border-top: 1px solid var(--ms-hairline);
+  margin-top: 2px;
+  border-radius: 0 0 var(--ms-radius-xs) var(--ms-radius-xs);
+}
+
 .me-soul-user-chip.is-active-note {
   border: 1px solid var(--ms-accent-line);
   background: var(--ms-accent-soft);
 }
 
-/* ---------- log ---------- */
-
-.me-soul-log {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 22px 6px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  scroll-behavior: smooth;
-  /* room for translucent header/composer fade */
-  -webkit-overflow-scrolling: touch;
-}
+/* ---------- messages ---------- */
 
 .me-soul-msg {
   animation: me-soul-in var(--ms-duration) var(--ms-ease) both;
   max-width: 720px;
   width: 100%;
   margin: 0 auto;
-  padding: 0 14px;
+  padding: 0 12px;
   box-sizing: border-box;
+}
+
+.me-soul-panel-sidebar .me-soul-msg {
+  padding: 0 10px;
 }
 
 @keyframes me-soul-in {
@@ -609,16 +839,17 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   margin-left: auto;
   max-width: 78%;
   width: fit-content;
-  background: var(--ms-accent-soft);
-  border: 1px solid var(--ms-accent-line);
+  background: #fff;
+  border: 1px solid var(--ms-line);
   border-radius: 20px 20px 6px 20px;
   padding: 10px 15px;
   font-size: 0.94rem;
   line-height: 1.55;
   letter-spacing: -0.005em;
+  color: var(--ms-ink);
   white-space: pre-wrap;
   word-break: break-word;
-  box-shadow: 0 1px 0 color-mix(in srgb, white 8%, transparent) inset;
+  box-shadow: var(--ms-shadow-sm);
 }
 
 .me-soul-user-meta {
@@ -635,22 +866,37 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   padding: 2px 9px;
   border-radius: var(--ms-radius-pill);
   background: var(--ms-accent-mid);
-  color: var(--text-normal);
+  color: var(--ms-ink);
   font-weight: 500;
 }
 
 .me-soul-user-text {
   white-space: pre-wrap;
   word-break: break-word;
+  color: var(--ms-ink);
+  opacity: 1;
 }
 
-/* ----- agent: typeset prose, no bubble ----- */
+/* ----- agent: solid opaque typeset (never theme text vars) ----- */
 
 .me-soul-agent .me-soul-msg-body {
   font-size: 0.96rem;
   line-height: 1.65;
   letter-spacing: -0.003em;
-  color: var(--text-normal);
+  color: var(--ms-ink) !important;
+  opacity: 1 !important;
+  -webkit-text-fill-color: var(--ms-ink);
+}
+
+.me-soul-agent .me-soul-msg-body,
+.me-soul-agent .me-soul-msg-body * {
+  color: inherit;
+  opacity: 1;
+}
+
+.me-soul-agent .me-soul-msg-body a {
+  color: var(--ms-accent) !important;
+  -webkit-text-fill-color: var(--ms-accent);
 }
 
 .me-soul-agent .me-soul-msg-body > *:first-child {
@@ -661,6 +907,9 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0.35em 0;
+  color: var(--ms-ink) !important;
+  -webkit-text-fill-color: var(--ms-ink);
+  opacity: 1 !important;
 }
 
 /* streaming caret */
@@ -684,6 +933,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 .me-soul-text {
   margin: 0.4em 0;
+  color: var(--ms-ink);
+  opacity: 1;
 }
 .me-soul-text:first-child {
   margin-top: 0;
@@ -691,18 +942,21 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 .me-soul-agent .me-soul-msg-body p {
   margin: 0.5em 0;
+  color: var(--ms-ink);
 }
 
 .me-soul-agent .me-soul-msg-body pre {
-  border: 1px solid var(--ms-hairline);
+  border: 1px solid var(--ms-line);
   border-radius: var(--ms-radius-sm);
-  background: var(--background-secondary);
+  background: var(--ms-surface-chip);
+  color: var(--ms-ink);
   padding: 12px 14px;
   overflow-x: auto;
 }
 
 .me-soul-agent .me-soul-msg-body code {
   font-size: 0.88em;
+  color: var(--ms-ink);
 }
 
 /* ----- thought: marginalia ----- */
@@ -723,13 +977,13 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-faint);
+  color: var(--ms-faint);
   user-select: none;
   transition: color var(--ms-duration-fast) var(--ms-ease);
 }
 
 .me-soul-thought summary:hover {
-  color: var(--text-muted);
+  color: var(--ms-muted);
 }
 
 .me-soul-thought summary::-webkit-details-marker {
@@ -738,7 +992,7 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 .me-soul-thought summary::after {
   content: ' ▸';
-  color: var(--text-faint);
+  color: var(--ms-faint);
   font-size: 0.85em;
 }
 
@@ -751,14 +1005,16 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-size: 0.86rem;
   line-height: 1.6;
   letter-spacing: 0.01em;
-  color: var(--text-muted);
+  color: var(--ms-ink-secondary);
   font-style: italic;
   white-space: pre-wrap;
   word-break: break-word;
+  opacity: 1;
 }
 
 .me-soul-log.is-quiet .me-soul-thought {
-  opacity: 0.55;
+  /* Dim the chrome of thoughts, not body text readability */
+  filter: saturate(0.85);
 }
 
 /* ----- tools: compact material rows ----- */
@@ -776,7 +1032,7 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   border: 1px solid var(--ms-hairline);
   font-family: var(--font-monospace);
   font-size: 0.78rem;
-  color: var(--text-muted);
+  color: var(--ms-ink-secondary);
   width: fit-content;
   max-width: 100%;
 }
@@ -796,7 +1052,7 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: var(--text-faint);
+  background: var(--ms-faint);
   animation: me-soul-pulse 1.1s var(--ms-ease) infinite;
 }
 
@@ -841,17 +1097,18 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   letter-spacing: -0.015em;
   line-height: 1.25;
   margin-bottom: 6px;
-  color: var(--text-normal);
+  color: var(--ms-ink);
 }
 
 .me-soul-confirm-body {
   font-size: 0.84rem;
   line-height: 1.55;
-  color: var(--text-muted);
+  color: var(--ms-ink-secondary);
   margin-bottom: 12px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-monospace);
+  opacity: 1;
 }
 
 .me-soul-confirm-actions {
@@ -864,12 +1121,14 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   cursor: pointer;
   padding: 6px 16px;
   border-radius: var(--ms-radius-pill);
-  border: 1px solid var(--ms-hairline-strong);
-  background: var(--background-primary);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
   font-size: 0.82rem;
   font-weight: 500;
   letter-spacing: -0.01em;
-  color: var(--text-normal);
+  color: var(--ms-ink);
   transition:
     border-color var(--ms-duration-fast) var(--ms-ease),
     background var(--ms-duration-fast) var(--ms-ease),
@@ -878,7 +1137,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-confirm-actions button:hover {
-  border-color: var(--ms-accent);
+  border-color: var(--ms-accent-line);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .me-soul-confirm-actions button:active {
@@ -887,14 +1147,15 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-confirm-actions button[data-action='accept'] {
-  background: var(--ms-accent);
-  color: var(--text-on-accent, #fff);
-  border-color: transparent;
-  box-shadow: 0 1px 0 color-mix(in srgb, white 18%, transparent) inset;
+  background: rgba(139, 92, 246, 0.18);
+  color: #6d28d9;
+  border-color: rgba(139, 92, 246, 0.28);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset;
 }
 
 .me-soul-confirm-actions button[data-action='accept']:hover {
-  filter: brightness(1.05);
+  background: rgba(139, 92, 246, 0.28);
+  filter: none;
 }
 
 .me-soul-confirm.is-accepted {
@@ -938,7 +1199,7 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-size: 0.8rem;
   padding: 4px 8px;
   border-radius: var(--ms-radius-xs);
-  color: var(--text-faint);
+  color: var(--ms-faint);
   transition:
     background var(--ms-duration-fast) var(--ms-ease),
     color var(--ms-duration-fast) var(--ms-ease),
@@ -946,8 +1207,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-foot-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--ms-ink);
 }
 
 .me-soul-foot-btn:active {
@@ -984,44 +1245,33 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-size: 0.85rem;
 }
 
-/* ----- welcome ----- */
+/* ----- welcome (tips only — no slogan) ----- */
 
 .me-soul-welcome .me-soul-msg-body {
-  color: var(--text-muted);
-  font-size: 0.92rem;
-  line-height: 1.6;
-}
-
-.me-soul-welcome-hero {
-  font-size: 1.05rem;
-  font-weight: 500;
-  letter-spacing: -0.018em;
-  line-height: 1.4;
-  color: var(--text-normal);
-  margin-bottom: 0.35em;
-}
-
-.me-soul-welcome-sub {
+  color: var(--ms-muted);
   font-size: 0.88rem;
-  color: var(--text-muted);
-  letter-spacing: -0.005em;
+  line-height: 1.5;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 4px 0;
 }
 
 .me-soul-welcome-tips {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 0;
 }
 
 .me-soul-tip {
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   letter-spacing: 0.005em;
-  padding: 4px 11px;
+  padding: 3px 10px;
   border-radius: var(--ms-radius-pill);
-  border: 1px solid var(--ms-hairline);
-  background: var(--ms-material-heavy);
-  color: var(--text-faint);
+  border: 1px solid var(--ms-line);
+  background: var(--ms-surface);
+  color: var(--ms-muted);
   transition:
     border-color var(--ms-duration-fast) var(--ms-ease),
     color var(--ms-duration-fast) var(--ms-ease),
@@ -1030,57 +1280,119 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 .me-soul-tip:hover {
   border-color: var(--ms-accent-line);
-  color: var(--text-muted);
+  color: var(--ms-ink);
   background: var(--ms-accent-soft);
 }
 
-/* ---------- composer (floating material bar) ---------- */
+/* ---------- composer — iOS 26 liquid glass (overlay) ---------- */
 
 .me-soul-composer {
-  position: relative;
-  z-index: 4;
-  padding: 8px 14px 14px;
-  flex-shrink: 0;
-  background: var(--ms-material);
-  backdrop-filter: blur(var(--ms-blur)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--ms-blur)) saturate(180%);
-  border-top: none;
-}
-
-/* Scroll-edge fade above composer */
-.me-soul-composer::before {
-  content: '';
   position: absolute;
   left: 0;
   right: 0;
-  top: -18px;
-  height: 18px;
+  bottom: 0;
+  z-index: 5;
+  padding: 0 var(--ms-chrome-pad-x, 14px) 12px;
+  /* Pass clicks through empty chrome; glass/chips/suggest re-enable */
   pointer-events: none;
-  background: linear-gradient(
-    to top,
-    color-mix(in srgb, var(--background-primary) 45%, transparent),
-    transparent
-  );
+  background: transparent;
+  border-top: none;
 }
 
-.me-soul-composer.is-dragover::after {
+.me-soul-panel-sidebar .me-soul-composer {
+  padding: 0 10px 10px;
+}
+
+.me-soul-composer > * {
+  pointer-events: auto;
+}
+
+/* No opaque fade — that was blocking chat under the bar */
+.me-soul-composer::before {
+  display: none;
+}
+
+/*
+ * Liquid Glass surface (web approx of SwiftUI .glassEffect(.regular)):
+ * - MATERIAL is translucent + blurred (sees chat underneath)
+ * - Children (input text, icons) stay fully opaque
+ */
+.me-soul-glass {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 8px;
+  border-radius: 22px;
+  /* Glass fill only — lower alpha = more see-through of scrolling chat */
+  background: var(--ms-glass-fill);
+  backdrop-filter: blur(var(--ms-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--ms-blur)) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.75) inset,
+    0 0 0 0.5px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+  transition:
+    box-shadow var(--ms-duration-fast) var(--ms-ease),
+    border-color var(--ms-duration-fast) var(--ms-ease),
+    background var(--ms-duration-fast) var(--ms-ease),
+    transform var(--ms-press);
+  /* Isolation so glass blur doesn't desaturate child text */
+  isolation: isolate;
+}
+
+/* Foreground controls on glass stay solid */
+.me-soul-glass,
+.me-soul-glass .me-soul-input,
+.me-soul-glass .me-soul-status,
+.me-soul-glass .me-soul-model-select,
+.me-soul-glass .me-soul-mic,
+.me-soul-glass .me-soul-send,
+.me-soul-glass .me-soul-skill-active-pill {
+  opacity: 1;
+}
+
+.me-soul-glass .me-soul-input {
+  color: var(--ms-ink) !important;
+  -webkit-text-fill-color: var(--ms-ink);
+}
+
+.me-soul-glass:focus-within {
+  background: var(--ms-glass-fill-strong);
+  border-color: rgba(139, 92, 246, 0.35);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 0 0 3px var(--ms-accent-soft),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.me-soul-glass.is-voice-listening {
+  background: var(--ms-glass-fill-strong);
+  border-color: var(--ms-accent-line);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 0 0 3px var(--ms-accent-soft),
+    0 8px 22px rgba(139, 92, 246, 0.12);
+}
+
+.me-soul-composer.is-dragover .me-soul-glass::after {
   content: '松手，存入 raw/';
   position: absolute;
-  inset: 6px;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: inherit;
   border: 1.5px dashed var(--ms-accent);
-  border-radius: var(--ms-radius-sm);
-  background: color-mix(in srgb, var(--background-primary) 78%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--background-primary) 55%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   color: var(--ms-accent);
+  z-index: 5;
   font-size: 0.9rem;
   font-weight: 500;
-  letter-spacing: -0.01em;
   pointer-events: none;
-  z-index: 5;
 }
 
 /* suggest popup — elevated material */
@@ -1138,12 +1450,12 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   white-space: nowrap;
 }
 
-/* chips row */
+/* chips row — floats above glass */
 .me-soul-chips {
   display: none;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 8px;
+  margin: 0 4px 8px;
 }
 
 .me-soul-chips.has-chips {
@@ -1191,25 +1503,17 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   color: var(--text-normal);
 }
 
-/* input */
+/* input — sits inside liquid glass, no second chrome */
 .me-soul-input-wrap {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  border: 1px solid var(--ms-hairline-strong);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--background-primary) 82%, transparent);
-  padding: 9px 12px;
-  transition:
-    border-color var(--ms-duration-fast) var(--ms-ease),
-    box-shadow var(--ms-duration-fast) var(--ms-ease),
-    background var(--ms-duration-fast) var(--ms-ease);
-}
-
-.me-soul-input-wrap:focus-within {
-  border-color: var(--ms-accent-line);
-  box-shadow: 0 0 0 3px var(--ms-accent-soft);
-  background: color-mix(in srgb, var(--background-primary) 92%, transparent);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 2px 4px 0;
+  box-shadow: none;
 }
 
 .me-soul-active-skill {
@@ -1228,14 +1532,15 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-family: var(--font-monospace);
   padding: 3px 11px;
   border-radius: var(--ms-radius-pill);
-  background: var(--ms-accent);
-  color: var(--text-on-accent, #fff);
+  background: rgba(139, 92, 246, 0.14);
+  color: #6d28d9;
+  border: 1px solid rgba(139, 92, 246, 0.22);
   white-space: nowrap;
-  box-shadow: 0 1px 0 color-mix(in srgb, white 18%, transparent) inset;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset;
 }
 
 .me-soul-skill-active-pill .me-soul-chip-x {
-  color: color-mix(in srgb, var(--text-on-accent, #fff) 75%, transparent);
+  color: rgba(29, 78, 216, 0.65);
 }
 
 .me-soul-input {
@@ -1247,55 +1552,129 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   outline: none !important;
   box-shadow: none !important;
   background: transparent !important;
-  color: var(--text-normal);
+  color: var(--ms-ink);
+  -webkit-text-fill-color: var(--ms-ink);
   font-family: inherit;
   font-size: 0.95rem;
+  font-style: normal;
   line-height: 1.5;
   letter-spacing: -0.005em;
   padding: 0;
+  /* Keep multi-line scroll, hide the eyesore scrollbar */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge legacy */
 }
 
+.me-soul-input::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+  background: transparent !important;
+}
+
+/* Placeholder: lighter + italic — distinct from real typed text */
 .me-soul-input::placeholder {
-  color: var(--text-faint);
-  opacity: 0.85;
+  color: #b0b0b5 !important;
+  -webkit-text-fill-color: #b0b0b5 !important;
+  opacity: 1 !important;
+  font-style: italic !important;
+  font-weight: 400 !important;
 }
 
-.me-soul-composer-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 8px;
-  gap: 12px;
+.me-soul-input::-webkit-input-placeholder {
+  color: #b0b0b5 !important;
+  -webkit-text-fill-color: #b0b0b5 !important;
+  opacity: 1 !important;
+  font-style: italic !important;
+}
+
+.me-soul-input::-moz-placeholder {
+  color: #b0b0b5 !important;
+  opacity: 1 !important;
+  font-style: italic !important;
+}
+
+.me-soul-panel .me-soul-glass .me-soul-input::placeholder {
+  color: #b0b0b5 !important;
+  -webkit-text-fill-color: #b0b0b5 !important;
+  font-style: italic !important;
+  opacity: 1 !important;
 }
 
 .me-soul-status {
-  font-size: 0.72rem;
+  order: 3;
+  font-size: 0.68rem;
   letter-spacing: 0.01em;
-  color: var(--text-faint);
+  color: var(--ms-muted);
+  min-width: 0;
+  padding: 0 6px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity var(--ms-duration-fast) var(--ms-ease);
+}
+
+.me-soul-status.is-empty {
+  display: none;
 }
 
 .me-soul-composer-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 6px;
   flex-shrink: 0;
+  padding: 0 2px 2px;
+}
+
+/* Compact model picker beside mic */
+.me-soul-model-select--composer {
+  width: auto;
+  max-width: min(118px, 36vw);
+  min-width: 0;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  padding: 5px 22px 5px 8px;
+  border-radius: var(--ms-radius-pill);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--ms-muted);
+}
+
+.me-soul-model-select--composer:hover,
+.me-soul-model-select--composer:focus {
+  color: var(--ms-ink);
+  border-color: var(--ms-accent-line);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.me-soul-panel-sidebar .me-soul-model-select--composer {
+  max-width: min(100px, 32vw);
+  font-size: 0.66rem;
+  padding: 4px 20px 4px 7px;
 }
 
 .me-soul-mic {
   cursor: pointer;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  border: 1px solid var(--ms-hairline-strong);
-  background: color-mix(in srgb, var(--background-primary) 80%, transparent);
-  color: var(--text-muted);
-  font-size: 0.95rem;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  color: var(--ms-muted);
+  font-size: 0.9rem;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   user-select: none;
-  touch-action: none;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
   transition:
     transform var(--ms-press),
     background var(--ms-duration-fast) var(--ms-ease),
@@ -1305,9 +1684,9 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-mic:hover {
-  color: var(--text-normal);
+  color: var(--ms-ink);
   border-color: var(--ms-accent-line);
-  background: var(--ms-accent-soft);
+  background: rgba(139, 92, 246, 0.12);
 }
 
 .me-soul-mic:active {
@@ -1315,52 +1694,58 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-mic.is-listening {
-  color: var(--text-on-accent, #fff);
-  background: var(--ms-accent);
-  border-color: transparent;
+  color: #6d28d9;
+  background: rgba(139, 92, 246, 0.22);
+  border-color: rgba(139, 92, 246, 0.35);
   box-shadow:
-    0 0 0 4px var(--ms-accent-soft),
-    0 2px 10px color-mix(in srgb, var(--interactive-accent) 35%, transparent);
-  animation: me-soul-mic-pulse 1.2s var(--ms-ease) infinite;
+    0 0 0 3px var(--ms-accent-soft),
+    0 1px 0 rgba(255, 255, 255, 0.5) inset;
+  animation: me-soul-mic-pulse 1.35s var(--ms-ease) infinite;
 }
 
 @keyframes me-soul-mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 3px var(--ms-accent-soft); }
-  50% { box-shadow: 0 0 0 8px transparent; }
-}
-
-.me-soul-composer.is-voice-listening .me-soul-input-wrap {
-  border-color: var(--ms-accent-line);
-  box-shadow: 0 0 0 3px var(--ms-accent-soft);
+  0%, 100% {
+    box-shadow:
+      0 0 0 3px var(--ms-accent-soft),
+      0 2px 8px color-mix(in srgb, var(--ms-accent) 28%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 9px transparent,
+      0 2px 12px color-mix(in srgb, var(--ms-accent) 40%, transparent);
+  }
 }
 
 .me-soul-send {
   cursor: pointer;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  border: none;
-  background: var(--ms-accent);
-  color: var(--text-on-accent, #fff);
-  font-size: 1rem;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  background: rgba(139, 92, 246, 0.2);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  color: #6d28d9;
+  font-size: 0.95rem;
   font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow:
-    0 1px 0 color-mix(in srgb, white 20%, transparent) inset,
-    0 2px 8px color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55) inset;
   transition:
     transform var(--ms-press),
-    opacity var(--ms-duration-fast) var(--ms-ease),
-    filter var(--ms-duration-fast) var(--ms-ease),
-    box-shadow var(--ms-duration-fast) var(--ms-ease);
+    background var(--ms-duration-fast) var(--ms-ease),
+    border-color var(--ms-duration-fast) var(--ms-ease),
+    box-shadow var(--ms-duration-fast) var(--ms-ease),
+    color var(--ms-duration-fast) var(--ms-ease);
 }
 
 .me-soul-send:hover {
-  filter: brightness(1.06);
+  background: rgba(139, 92, 246, 0.32);
+  border-color: rgba(139, 92, 246, 0.4);
   transform: scale(1.04);
+  filter: none;
 }
 
 .me-soul-send:active {
@@ -1370,14 +1755,10 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .is-busy .me-soul-send {
-  background: color-mix(in srgb, var(--text-muted) 70%, var(--interactive-accent));
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--ms-ink-secondary);
   box-shadow: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .me-soul-mic.is-listening {
-    animation: none;
-  }
 }
 
 /* scrollbar refinement inside panel */
@@ -1415,7 +1796,8 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   }
 
   .me-soul-dot,
-  .is-busy .me-soul-dot {
+  .is-busy .me-soul-dot,
+  .me-soul-mic.is-listening {
     animation: none;
     opacity: 1;
     transform: none;
@@ -1430,13 +1812,22 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
     opacity: 0.7;
   }
 
+  .me-soul-more-menu,
+  .me-soul-context-popover {
+    transition: opacity 120ms ease !important;
+    transform: none !important;
+  }
+
   .me-soul-care-chip,
   .me-soul-icon-btn,
   .me-soul-foot-btn,
   .me-soul-confirm-actions button,
   .me-soul-input-wrap,
   .me-soul-tip,
-  .me-soul-send {
+  .me-soul-send,
+  .me-soul-mic,
+  .me-soul-context-chip,
+  .me-soul-menu-item {
     transition-duration: 0.01ms !important;
   }
 
@@ -1452,16 +1843,31 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
   .me-soul-header,
   .me-soul-composer,
+  .me-soul-glass,
   .me-soul-suggest,
   .me-soul-confirm,
-  .me-soul-tool-row {
+  .me-soul-tool-row,
+  .me-soul-more-menu,
+  .me-soul-context-popover {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
 
   .me-soul-header,
-  .me-soul-composer {
+  .me-soul-more-menu,
+  .me-soul-context-popover {
     background: var(--background-primary);
+  }
+
+  .me-soul-glass {
+    /* Reduced transparency: still light, not a solid slab */
+    background: color-mix(in srgb, var(--background-primary) 78%, transparent);
+    border-color: var(--background-modifier-border);
+    box-shadow: var(--ms-shadow-sm);
+  }
+
+  .me-soul-composer {
+    background: transparent;
   }
 
   .me-soul-suggest,
@@ -1503,7 +1909,199 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
     border-bottom: 1px solid var(--ms-hairline-strong);
   }
 
-  .me-soul-composer {
-    border-top: 1px solid var(--ms-hairline-strong);
+  .me-soul-glass {
+    border-color: var(--text-muted);
   }
+}
+
+
+/* ========== FORCE glass buttons (beat Obsidian theme) ==========
+   Screenshot showed solid black pills for 牵挂 / ··· / context /
+   mic / send before hover — Obsidian `button` rules win without
+   !important + higher specificity.
+   ============================================================ */
+
+.me-soul-panel button.me-soul-mic,
+.me-soul-panel button.me-soul-send,
+.me-soul-panel button.me-soul-icon-btn,
+.me-soul-panel button.me-soul-more-btn,
+.me-soul-panel button.me-soul-care-chip,
+.me-soul-panel button.me-soul-context-chip,
+.me-soul-panel button.me-soul-context-btn,
+.me-soul-panel button.me-soul-menu-item,
+.me-soul-panel .me-soul-confirm-actions button {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background-image: none !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55) inset !important;
+}
+
+/* Shared frosted default (idle / not hovered) */
+.me-soul-panel button.me-soul-mic,
+.me-soul-panel button.me-soul-send,
+.me-soul-panel button.me-soul-icon-btn,
+.me-soul-panel button.me-soul-more-btn,
+.me-soul-panel button.me-soul-care-chip,
+.me-soul-panel button.me-soul-context-chip {
+  background: rgba(255, 255, 255, 0.5) !important;
+  background-color: rgba(255, 255, 255, 0.5) !important;
+  color: #3a3a3c !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Mic */
+.me-soul-panel button.me-soul-mic {
+  border-radius: 50% !important;
+  width: 32px !important;
+  height: 32px !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+}
+.me-soul-panel button.me-soul-mic:hover {
+  background: rgba(139, 92, 246, 0.14) !important;
+  background-color: rgba(139, 92, 246, 0.14) !important;
+  color: #1c1c1e !important;
+  border-color: rgba(139, 92, 246, 0.28) !important;
+}
+.me-soul-panel button.me-soul-mic.is-listening {
+  background: rgba(139, 92, 246, 0.22) !important;
+  background-color: rgba(139, 92, 246, 0.22) !important;
+  color: #6d28d9 !important;
+  border-color: rgba(139, 92, 246, 0.35) !important;
+}
+
+/* Send — soft blue glass, never solid black */
+.me-soul-panel button.me-soul-send {
+  border-radius: 50% !important;
+  width: 32px !important;
+  height: 32px !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  background: rgba(139, 92, 246, 0.18) !important;
+  background-color: rgba(139, 92, 246, 0.18) !important;
+  color: #6d28d9 !important;
+  border: 1px solid rgba(139, 92, 246, 0.28) !important;
+}
+.me-soul-panel button.me-soul-send:hover {
+  background: rgba(139, 92, 246, 0.3) !important;
+  background-color: rgba(139, 92, 246, 0.3) !important;
+  color: #6d28d9 !important;
+}
+.me-soul-panel.is-busy button.me-soul-send,
+.me-soul-panel .is-busy button.me-soul-send,
+.me-soul-shell.is-busy button.me-soul-send {
+  background: rgba(0, 0, 0, 0.06) !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #3a3a3c !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Header ··· and care chip */
+.me-soul-panel button.me-soul-icon-btn,
+.me-soul-panel button.me-soul-more-btn {
+  border-radius: 999px !important;
+  min-height: 0 !important;
+  padding: 6px 10px !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  background-color: rgba(255, 255, 255, 0.55) !important;
+  color: #3a3a3c !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+.me-soul-panel button.me-soul-icon-btn:hover,
+.me-soul-panel button.me-soul-more-btn:hover,
+.me-soul-panel button.me-soul-icon-btn.is-on,
+.me-soul-panel button.me-soul-more-btn.is-on {
+  background: rgba(255, 255, 255, 0.82) !important;
+  background-color: rgba(255, 255, 255, 0.82) !important;
+  color: #1c1c1e !important;
+}
+
+.me-soul-panel button.me-soul-care-chip {
+  border-radius: 999px !important;
+  min-height: 0 !important;
+  padding: 4px 11px !important;
+  font-size: 0.74rem !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  background-color: rgba(255, 255, 255, 0.55) !important;
+  color: #6b6b70 !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+.me-soul-panel button.me-soul-care-chip.has-items {
+  background: rgba(139, 92, 246, 0.12) !important;
+  background-color: rgba(139, 92, 246, 0.12) !important;
+  color: #6d28d9 !important;
+  border-color: rgba(139, 92, 246, 0.28) !important;
+}
+
+/* Context chip — was solid charcoal in screenshot */
+.me-soul-panel button.me-soul-context-chip {
+  border-radius: 999px !important;
+  min-height: 0 !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  background-color: rgba(255, 255, 255, 0.55) !important;
+  color: #3a3a3c !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset !important;
+}
+.me-soul-panel button.me-soul-context-chip:hover,
+.me-soul-panel button.me-soul-context-chip.is-open {
+  background: rgba(255, 255, 255, 0.82) !important;
+  background-color: rgba(255, 255, 255, 0.82) !important;
+  color: #1c1c1e !important;
+}
+.me-soul-panel .me-soul-context-mode-tag {
+  background: rgba(139, 92, 246, 0.14) !important;
+  color: #6d28d9 !important;
+}
+.me-soul-panel .me-soul-context-path {
+  color: #3a3a3c !important;
+}
+.me-soul-panel .me-soul-context-strip.has-note .me-soul-context-path {
+  color: #1c1c1e !important;
+}
+
+/* Model select next to mic */
+.me-soul-panel select.me-soul-model-select,
+.me-soul-panel select.me-soul-model-select--composer {
+  background: rgba(255, 255, 255, 0.45) !important;
+  background-color: rgba(255, 255, 255, 0.45) !important;
+  color: #3a3a3c !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  box-shadow: none !important;
+}
+.me-soul-panel select.me-soul-model-select:hover,
+.me-soul-panel select.me-soul-model-select:focus,
+.me-soul-panel select.me-soul-model-select--composer:hover,
+.me-soul-panel select.me-soul-model-select--composer:focus {
+  background: rgba(255, 255, 255, 0.72) !important;
+  background-color: rgba(255, 255, 255, 0.72) !important;
+  color: #1c1c1e !important;
+}
+
+/* Confirm actions */
+.me-soul-panel .me-soul-confirm-actions button {
+  background: rgba(255, 255, 255, 0.55) !important;
+  background-color: rgba(255, 255, 255, 0.55) !important;
+  color: #1c1c1e !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+.me-soul-panel .me-soul-confirm-actions button[data-action='accept'] {
+  background: rgba(139, 92, 246, 0.18) !important;
+  background-color: rgba(139, 92, 246, 0.18) !important;
+  color: #6d28d9 !important;
+  border-color: rgba(139, 92, 246, 0.28) !important;
+}
+
+/* No scrollbars inside the liquid-glass composer shell */
+.me-soul-glass,
+.me-soul-input-wrap {
+  scrollbar-width: none;
+}
+.me-soul-glass::-webkit-scrollbar,
+.me-soul-input-wrap::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
 }
