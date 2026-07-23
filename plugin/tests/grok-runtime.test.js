@@ -116,6 +116,17 @@ describe('grok-runtime', () => {
     assert.match(plan.configToml || '', /sk-test/);
   });
 
+  it('buildThirdPartyConfigToml disables stream_tool_calls for gateways', () => {
+    const t = buildThirdPartyConfigToml({
+      model: 'gpt-4o-mini',
+      baseUrl: 'https://www.dmxapi.cn/v1',
+      apiKey: 'sk-x',
+      label: 'DMX',
+    });
+    assert.match(t, /stream_tool_calls = false/);
+    assert.match(t, /api_backend = "chat_completions"/);
+  });
+
   it('buildThirdPartyConfigToml quotes safely', () => {
     const t = buildThirdPartyConfigToml({
       model: 'gpt-4o',

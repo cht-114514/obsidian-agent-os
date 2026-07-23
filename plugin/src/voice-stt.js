@@ -260,9 +260,29 @@ export function joinSegments(a, b) {
  */
 
 /**
+ * Whether `full` looks like a re-stitch that already includes `prev`
+ * (xAI speech_final may re-send the whole utterance).
+ * @param {string} prev
+ * @param {string} full
+ */
+export function looksLikeSupersedingStitch(prev, full) {
+  const a = String(prev || '').trim();
+  const b = String(full || '').trim();
+  if (!a || !b) return false;
+  if (b === a) return true;
+  if (b.length < a.length * 0.85) return false;
+  // full starts with a substantial prefix of prev, or contains prev
+  const head = a.slice(0, Math.min(16, a.length));
+  if (head && b.includes(head) && b.length >= a.length) return true;
+  if (a.length >= 8 && b.includes(a)) return true;
+  return false;
+}
+
+/**
  * Pure accumulator for xAI streaming STT events.
- * - interim (is_final=false): replace interim only
- * - chunk/utterance final (is_final or speech_final): append to committed, clear interim
+ * - interim: replace interim only
+ * - chunk final (is_final, !speech_final): append segment
+ * - utterance final (speech_final): append, or replace if server re-stitched the whole turn
  * @param {TranscriptState} state
  * @param {{ text?: string, is_final?: boolean, speech_final?: boolean, type?: string }} event
  * @returns {{ state: TranscriptState, display: string }}
@@ -276,12 +296,25 @@ export function accumulateTranscript(state, event) {
   const type = event?.type || 'transcript.partial';
 
   if (type === 'transcript.done') {
-    const finalText = text || joinSegments(prev.committed, prev.interim);
+    // Prefer local committed+interim — server done text can be last-segment-only
+    // or a full re-stitch; handle both carefully to avoid wipe / double.
+    let finalText = joinSegments(prev.committed, prev.interim);
+    if (text) {
+      if (!finalText) {
+        finalText = text;
+      } else if (looksLikeSupersedingStitch(finalText, text)) {
+        finalText = text;
+      } else if (text.includes(finalText) && text.length > finalText.length) {
+        finalText = text;
+      } else if (finalText.includes(text)) {
+        /* already have it */
+      }
+      // else: keep local — short unrelated server tails are ignored
+    }
     const next = { committed: finalText, interim: '' };
     return { state: next, display: finalText };
   }
 
-  // partial / unknown treated as partial
   if (!text) {
     return {
       state: prev,
@@ -289,9 +322,23 @@ export function accumulateTranscript(state, event) {
     };
   }
 
-  const isFinal = !!(event.is_final || event.speech_final);
+  const speechFinal = !!event.speech_final;
+  const chunkFinal = !!event.is_final && !speechFinal;
   let next;
-  if (isFinal) {
+
+  if (speechFinal) {
+    // Utterance boundary: may be last chunk OR full stitched utterance
+    if (!prev.committed) {
+      next = { committed: text, interim: '' };
+    } else if (looksLikeSupersedingStitch(prev.committed, text)) {
+      next = { committed: text, interim: '' };
+    } else if (prev.committed.includes(text) && text.length < prev.committed.length) {
+      // already absorbed
+      next = { committed: prev.committed, interim: '' };
+    } else {
+      next = { committed: joinSegments(prev.committed, text), interim: '' };
+    }
+  } else if (chunkFinal || event.is_final) {
     next = {
       committed: joinSegments(prev.committed, text),
       interim: '',

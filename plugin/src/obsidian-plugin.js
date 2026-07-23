@@ -1,5 +1,5 @@
 /**
- * Obsidian Agent OS Obsidian plugin — homepage chat shell + sidebar view.
+ * Obsidian Agent OS Obsidian plugin — IDE command bar (primary) + sidebar/home chat (secondary).
  */
 import {
   Plugin,
@@ -9,12 +9,14 @@ import {
   Setting,
   MarkdownRenderer,
   Platform,
+  MarkdownView,
 } from 'obsidian';
 import { MeSoulController } from './main.js';
 import { mountMeSoulChat } from './chat-panel.js';
 import { GrokAcpClient, makeVaultAutoApprove } from './acp-client.js';
 import { checkWritePolicy } from './protocol-bridge.js';
 import { MeSoulSetupModal, seedVaultScaffold, needsScaffold } from './setup.js';
+import { createCommandBarController } from './command-bar.js';
 import {
   DEFAULT_GROK_PROFILES,
   formatGrokRuntimeLabel,
@@ -38,7 +40,7 @@ class MeSoulView extends ItemView {
   }
 
   getDisplayText() {
-    return 'Obsidian Agent OS';
+    return this.plugin?.settings?.agentName || 'Agent';
   }
 
   getIcon() {
@@ -46,13 +48,16 @@ class MeSoulView extends ItemView {
   }
 
   async onOpen() {
+    this.contentEl.empty();
+    this.contentEl.addClass('me-soul-view-content');
+    // Full-screen main-tab chat (Claude / ChatGPT style) — not a right sidebar
     this._mount = mountMeSoulChat(this.contentEl, {
       app: this.app,
       controller: this.plugin.controller,
       plugin: this.plugin,
       Notice,
       MarkdownRenderer,
-      mode: 'sidebar',
+      mode: 'fullscreen',
     });
   }
 
@@ -98,11 +103,16 @@ export default class MeSoulPlugin extends Plugin {
     await this.loadSettings();
     this.controller = new MeSoulController(this.settings);
     this.acp = null;
+    this.commandBar = createCommandBarController(this.app, this, { Notice });
 
     document.body.classList.add('me-soul-plugin-loaded');
     this.register(() => document.body.classList.remove('me-soul-plugin-loaded'));
+    this.register(() => {
+      this.commandBar?.destroy?.();
+      this.commandBar = null;
+    });
 
-    // Homepage: ```me-soul``` code block
+    // Homepage: ```me-soul``` code block (secondary deep entry)
     this.registerMarkdownCodeBlockProcessor('me-soul', (source, el, ctx) => {
       const host = new MeSoulHomeHost(el, this);
       host.onload();
@@ -112,10 +122,25 @@ export default class MeSoulPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE, (leaf) => new MeSoulView(leaf, this));
 
-    this.addRibbonIcon('sparkles', 'Obsidian Agent OS', () => this.activateView());
+    this.addRibbonIcon('sparkles', 'Agent 全屏对话', () => this.activateView());
+
+    // Primary: IDE command bar (inline, on the note)
+    this.addCommand({
+      id: 'obsidian-agent-os-command-bar',
+      name: 'Open Agent command bar',
+      hotkeys: [{ modifiers: ['Mod', 'Shift'], key: ' ' }],
+      callback: () => this.commandBar?.toggle(),
+    });
+    this.addCommand({
+      id: 'obsidian-agent-os-command-bar-open',
+      name: 'Open Agent command bar (force open)',
+      callback: () => this.commandBar?.open({ forceOpen: true }),
+    });
+
+    // Full-screen chat tab (Claude / ChatGPT style)
     this.addCommand({
       id: 'obsidian-agent-os-open',
-      name: 'Open Obsidian Agent OS chat',
+      name: 'Open Agent full-screen chat',
       callback: () => this.activateView(),
     });
     this.addCommand({
@@ -154,6 +179,25 @@ export default class MeSoulPlugin extends Plugin {
       },
     });
 
+    // Editor context menu: process selection via command bar
+    this.registerEvent(
+      this.app.workspace.on('editor-menu', (menu, editor, view) => {
+        if (this.settings.commandBarEnabled === false) return;
+        const sel = editor?.getSelection?.() || '';
+        menu.addItem((item) => {
+          item
+            .setTitle(sel ? '用 Agent 处理选区…' : '打开 Agent 命令条…')
+            .setIcon('sparkles')
+            .onClick(() => {
+              this.commandBar?.open({ forceOpen: true });
+            });
+        });
+      })
+    );
+
+    // Optional floating chip near selection (Phase 1.5)
+    this._setupSelectionChip();
+
     this.addSettingTab(new MeSoulSettingTab(this.app, this));
 
     this.register(() => {
@@ -169,6 +213,94 @@ export default class MeSoulPlugin extends Plugin {
         this.openHome();
       }
     });
+  }
+
+  /**
+   * Lightweight "✦" chip near selection — opens command bar.
+   * Disabled when settings.commandBarSelectionChip === false.
+   */
+  _setupSelectionChip() {
+    /** @type {HTMLElement | null} */
+    let chip = null;
+    let hideTimer = null;
+
+    const removeChip = () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+      if (chip) {
+        chip.remove();
+        chip = null;
+      }
+    };
+
+    const placeChip = () => {
+      if (this.settings.commandBarEnabled === false) {
+        removeChip();
+        return;
+      }
+      if (this.settings.commandBarSelectionChip === false) {
+        removeChip();
+        return;
+      }
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view?.editor) {
+        removeChip();
+        return;
+      }
+      const sel = view.editor.getSelection();
+      if (!sel || !sel.trim()) {
+        removeChip();
+        return;
+      }
+      // Avoid overlapping command bar
+      if (this.commandBar?.isOpen?.()) {
+        removeChip();
+        return;
+      }
+
+      let top = 72;
+      let left = 24;
+      try {
+        const sel = window.getSelection?.();
+        if (sel && sel.rangeCount > 0) {
+          const rect = sel.getRangeAt(0).getBoundingClientRect();
+          if (rect && (rect.width || rect.height)) {
+            top = Math.max(8, rect.top - 36);
+            left = Math.max(8, rect.left);
+          }
+        }
+      } catch {
+        /* keep defaults */
+      }
+
+      if (!chip) {
+        chip = document.body.createDiv({ cls: 'me-soul-sel-chip' });
+        chip.setAttr('title', '用 Agent 处理选区');
+        chip.setText('✦');
+        chip.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          removeChip();
+          this.commandBar?.open({ forceOpen: true });
+        };
+      }
+
+      chip.style.top = `${top}px`;
+      chip.style.left = `${left}px`;
+      chip.style.right = 'auto';
+      chip.addClass('is-visible');
+    };
+
+    const schedulePlace = () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(placeChip, 180);
+    };
+
+    this.registerDomEvent(document, 'selectionchange', schedulePlace);
+    this.registerEvent(this.app.workspace.on('active-leaf-change', removeChip));
+    this.register(() => removeChip());
   }
 
   openSetup() {
@@ -269,13 +401,43 @@ export default class MeSoulPlugin extends Plugin {
     await leaf.openFile(file);
   }
 
+  /**
+   * Open Agent chat as a full main-area tab (not the right sidebar).
+   * Layout mirrors Claude / ChatGPT: center stage, full height.
+   */
   async activateView() {
     const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(VIEW_TYPE)[0];
+    const existing = workspace.getLeavesOfType(VIEW_TYPE);
+
+    const isSideLeaf = (leaf) => {
+      try {
+        const root = leaf?.getRoot?.();
+        return root === workspace.leftSplit || root === workspace.rightSplit;
+      } catch {
+        return false;
+      }
+    };
+
+    // Prefer an existing leaf already in the main workspace
+    let leaf = existing.find((l) => !isSideLeaf(l));
+
     if (!leaf) {
-      leaf = workspace.getRightLeaf(false);
+      // New tab in the main split (full workspace area)
+      leaf = workspace.getLeaf('tab');
       await leaf.setViewState({ type: VIEW_TYPE, active: true });
     }
+
+    // Drop legacy right-sidebar instances so we don't keep a narrow panel around
+    for (const old of existing) {
+      if (old !== leaf && isSideLeaf(old)) {
+        try {
+          old.detach();
+        } catch {
+          /* */
+        }
+      }
+    }
+
     workspace.revealLeaf(leaf);
   }
 
@@ -295,7 +457,14 @@ export default class MeSoulPlugin extends Plugin {
         gatewayUrl: 'http://127.0.0.1:18789',
         token: '',
         quiet: false,
-        openHomeOnStart: true,
+        /** IDE primary entry; sidebar/home are secondary. */
+        commandBarEnabled: true,
+        /** Optional soul pack inject into command-bar prompts (heavier). */
+        commandBarInjectSoul: false,
+        /** Floating ✦ chip when text is selected. */
+        commandBarSelectionChip: true,
+        /** Default off — notes first; open home only if user opts in. */
+        openHomeOnStart: false,
         setupDone: false,
         agentName: 'Agent',
         userName: '',
@@ -323,6 +492,7 @@ export default class MeSoulPlugin extends Plugin {
         skills: [
           'me-digest',
           'me-write-insight',
+          'me-reflect-feedback',
           'me-care-check',
           'me-apply-pending',
           'me-apply-insight',
@@ -337,6 +507,7 @@ export default class MeSoulPlugin extends Plugin {
     const builtinSkills = [
       'me-digest',
       'me-write-insight',
+      'me-reflect-feedback',
       'me-care-check',
       'me-apply-pending',
       'me-apply-insight',
@@ -441,7 +612,9 @@ class MeSoulSettingTab extends PluginSettingTab {
 
       new Setting(body)
         .setName('启动时打开首页')
-        .setDesc(`Layout ready 时打开「${s.homePath || '00-首页.md'}」`)
+        .setDesc(
+          `默认关闭（IDE 模式）。开启后 layout ready 打开「${s.homePath || '00-首页.md'}」`
+        )
         .addToggle((t) =>
           t.setValue(!!s.openHomeOnStart).onChange(async (v) => {
             s.openHomeOnStart = v;
@@ -451,11 +624,48 @@ class MeSoulSettingTab extends PluginSettingTab {
 
       new Setting(body)
         .setName('今日少说话（Quiet）')
-        .setDesc('收起思绪块，回复更克制')
+        .setDesc('收起思绪块，回复更克制（侧栏/首页）')
         .addToggle((t) =>
           t.setValue(!!s.quiet).onChange(async (v) => {
             s.quiet = v;
             this.plugin.controller.setQuiet(v);
+            await this.plugin.saveSettings();
+          })
+        );
+
+      new Setting(body)
+        .setName('Agent 命令条（IDE）')
+        .setDesc(
+          '主入口：快捷键召唤悬浮条（默认 Mod+Shift+Space）。用自然语言改写/续写/提问。'
+        )
+        .addToggle((t) =>
+          t.setValue(s.commandBarEnabled !== false).onChange(async (v) => {
+            s.commandBarEnabled = v;
+            await this.plugin.saveSettings();
+          })
+        )
+        .addButton((b) =>
+          b.setButtonText('打开命令条').onClick(() => {
+            this.plugin.commandBar?.open({ forceOpen: true });
+          })
+        );
+
+      new Setting(body)
+        .setName('选区浮动按钮 ✦')
+        .setDesc('选中文字后显示轻量按钮，点击打开命令条')
+        .addToggle((t) =>
+          t.setValue(s.commandBarSelectionChip !== false).onChange(async (v) => {
+            s.commandBarSelectionChip = v;
+            await this.plugin.saveSettings();
+          })
+        );
+
+      new Setting(body)
+        .setName('命令条注入 Soul 人格')
+        .setDesc('默认关闭以保持轻量；开启后把 soul 摘要打进命令条 prompt')
+        .addToggle((t) =>
+          t.setValue(!!s.commandBarInjectSoul).onChange(async (v) => {
+            s.commandBarInjectSoul = v;
             await this.plugin.saveSettings();
           })
         );

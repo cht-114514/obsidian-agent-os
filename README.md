@@ -14,7 +14,9 @@ Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS
 
 | Loop | What it does |
 |------|----------------|
-| **Chat** | Homepage / sidebar; `@` notes, `/` skills, drag files into `agent-inbox/raw/` |
+| **Command bar (primary)** | `Mod+Shift+Space` floating bar; model NL → insert / replace / show |
+| **Full-screen chat** | Ribbon / command → main-tab Claude/ChatGPT-style chat; `@` `/` skills · raw drop |
+| **Feedback** | 👍/👎 toggle/cancel → day log only; **写反馈** → reflect skill + confirm → profile/style |
 | **Digest** | `/me-digest` → wiki under `agent-inbox/wiki/` → confirm card |
 | **Insight (心迹)** | `/me-write-insight` → draft + confirm → profile |
 | **Care (牵挂)** | `/me-care-check` + `cares.md` guardrails |
@@ -76,7 +78,8 @@ Enable **Obsidian Agent OS** under Obsidian → Settings → Community plugins.
 3. Seed templates → creates `agent-inbox/soul/*`, home note, wiki folders
 4. Edit `agent-inbox/soul/SOUL.md` / `profile.md` to taste
 5. Settings → engine (Grok / OpenClaw), optional Embed API key
-6. Open the home note with a ` ```me-soul ` block
+6. In any note: **Open Agent command bar** (`Mod+Shift+Space`) for rewrite / continue / ask
+7. Optional: open the home note with a ` ```me-soul ` block or ribbon for full chat
 
 ### Memory migration (manual, beta)
 

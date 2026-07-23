@@ -6,6 +6,7 @@
 export const GROK_SKILL_IDS = new Set([
   'me-digest',
   'me-write-insight',
+  'me-reflect-feedback',
   'me-care-check',
   'me-soul-promote',
   'memorized',
@@ -59,6 +60,20 @@ Draft a 心迹 (insight) about the **user's stable preferences/boundaries**, NOT
 4. Output :::thought + :::confirm type=insight
 
 If user is clearly discussing a note (@ or 讨论), refuse skill and tell them to drop the pill and chat normally.
+`,
+
+  'me-reflect-feedback': `# me-reflect-feedback
+
+## Goal
+Turn **concrete user feedback on one agent reply** into a confirmable memory update (profile / style).
+
+## Steps
+1. Read user feedback + original reply excerpt from the message.
+2. Write insight draft under agent-inbox/soul/insights/drafts/YYYY-MM-DD-feedback-<slug>.md
+3. Write pending agent-inbox/pending/YYYY-MM-DD-insight-feedback-<slug>.md (type: insight; target profile and/or style).
+4. Output short :::thought + :::confirm type=insight
+5. Only write under agent-inbox/. Do not change IDENTITY unless asked.
+6. Empty feedback → refuse, no files.
 `,
 
   'me-care-check': `# me-care-check

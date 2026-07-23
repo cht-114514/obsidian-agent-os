@@ -8,7 +8,8 @@
  *   @  → vault-wide fuzzy file search → reference chips
  *   /  → skill menu → pill mode (Backspace on empty input clears)
  *   paste/drop file → agent-inbox/raw/ + attachment chip
- *   👍 / 👎 / copy on every agent message → agent-inbox/soul/feedback/<date>.md
+ *   👍 / 👎 (toggle/cancel) + 反馈 (written note → reflect skill) + copy
+ *   → agent-inbox/soul/feedback/<date>.md；写反馈触发 me-reflect-feedback
  */
 import { renderAgentMessage } from './renderer.js';
 import { setWikiStatus } from './digest.js';
@@ -20,7 +21,8 @@ import {
   upsertVectorsForPath,
   removeVectorsForPath,
 } from './memory/index-ops.js';
-import { VoiceInputSession, resolveXaiApiKey } from './voice-stt.js';
+import { VoiceInputSession, resolveXaiApiKey, joinSegments } from './voice-stt.js';
+import { polishDictation, appendPolished } from './voice-polish.js';
 import {
   createActiveNoteState,
   onMarkdownFocus,
@@ -49,6 +51,11 @@ import {
   normalizeGrokProfiles,
   resolveGrokRuntime,
 } from './grok-runtime.js';
+import {
+  makeFeedbackId,
+  appendFeedbackEntry,
+  updateFeedbackVote,
+} from './feedback-store.js';
 
 /**
  * @param {HTMLElement} containerEl
@@ -58,14 +65,21 @@ import {
  *   plugin: any,
  *   Notice: any,
  *   MarkdownRenderer?: any,
- *   mode?: 'home' | 'sidebar',
+ *   mode?: 'home' | 'sidebar' | 'fullscreen',
  * }} ctx
  */
 export function mountMeSoulChat(containerEl, ctx) {
   const { app, controller, plugin, Notice, MarkdownRenderer, mode = 'home' } = ctx;
   containerEl.empty();
   containerEl.addClass('me-soul-panel');
-  containerEl.addClass(mode === 'home' ? 'me-soul-panel-home' : 'me-soul-panel-sidebar');
+  // fullscreen = main-tab ChatGPT-style; home = embedded note; sidebar = legacy narrow
+  const modeClass =
+    mode === 'fullscreen'
+      ? 'me-soul-panel-fullscreen'
+      : mode === 'sidebar'
+        ? 'me-soul-panel-sidebar'
+        : 'me-soul-panel-home';
+  containerEl.addClass(modeClass);
 
   /** @param {string} message */
   function notify(message) {
@@ -131,13 +145,23 @@ export function mountMeSoulChat(containerEl, ctx) {
   const statusEl = brandText.createDiv({ cls: 'me-soul-subtitle', text: '就绪' });
 
   const tools = header.createDiv({ cls: 'me-soul-header-tools' });
+
+  // Model picker — always visible in header (fullscreen + home + sidebar)
+  const modelSelect = tools.createEl('select', {
+    cls: 'me-soul-model-select me-soul-model-select--header',
+    attr: {
+      'aria-label': '切换模型',
+      title: '切换 Grok Build 模型 / 第三方 API',
+    },
+  });
+
   const careEl = tools.createEl('button', {
     cls: 'me-soul-care-chip me-soul-care-chip--header',
     attr: { type: 'button', 'aria-label': '牵挂', title: '牵挂' },
     text: '牵挂',
   });
-  // Keep a compact care indicator on the bar; details live in overflow too
-  careEl.style.display = mode === 'home' ? '' : 'none';
+  // Care chip on spacious layouts (home embed + full-screen tab)
+  careEl.style.display = mode === 'sidebar' ? 'none' : '';
 
   const moreWrap = tools.createDiv({ cls: 'me-soul-more-wrap' });
   const moreBtn = moreWrap.createEl('button', {
@@ -437,11 +461,11 @@ export function mountMeSoulChat(containerEl, ctx) {
   const actionsEl = glass.createDiv({ cls: 'me-soul-composer-actions' });
   const hintEl = glass.createDiv({ cls: 'me-soul-status' });
   hintEl.addClass('is-empty');
-  // Model next to mic (compact select)
-  const modelSelect = actionsEl.createEl('select', {
+  // Secondary model picker next to mic (same control state as header)
+  const modelSelectComposer = actionsEl.createEl('select', {
     cls: 'me-soul-model-select me-soul-model-select--composer',
     attr: {
-      'aria-label': '模型配置档',
+      'aria-label': '切换模型',
       title: '切换 Grok Build 模型 / 第三方 API',
     },
   });
@@ -485,24 +509,32 @@ export function mountMeSoulChat(containerEl, ctx) {
   requestAnimationFrame(syncChromeInsets);
   setTimeout(syncChromeInsets, 50);
 
-  function refreshModelSelect() {
+  function fillModelSelect(sel) {
+    if (!sel) return;
     const profiles = normalizeGrokProfiles(plugin.settings.grokProfiles);
     plugin.settings.grokProfiles = profiles;
     const active = plugin.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
-    modelSelect.empty();
+    sel.empty();
     for (const p of profiles) {
-      const opt = modelSelect.createEl('option', {
+      const opt = sel.createEl('option', {
         text: p.label || p.model || p.id,
         attr: { value: p.id },
       });
       if (p.id === active) opt.selected = true;
     }
     const rt = resolveGrokRuntime(plugin.settings);
-    modelSelect.setAttr('title', formatGrokRuntimeLabel(rt));
+    const label = formatGrokRuntimeLabel(rt);
+    sel.setAttr('title', `当前：${label}`);
+  }
+
+  function refreshModelSelect() {
+    fillModelSelect(modelSelect);
+    fillModelSelect(modelSelectComposer);
   }
   refreshModelSelect();
-  modelSelect.onchange = async () => {
-    const id = modelSelect.value;
+
+  async function onModelChange(fromEl) {
+    const id = fromEl?.value;
     if (!id || id === plugin.settings.grokActiveProfile) return;
     if (busy) {
       notify('请等当前回复结束后再切换模型');
@@ -516,6 +548,12 @@ export function mountMeSoulChat(containerEl, ctx) {
             plugin.settings.grokActiveProfile = id;
             return resolveGrokRuntime(plugin.settings);
           })();
+      // Drop ACP session when switching endpoints/models
+      try {
+        plugin.acp?.resetSession?.();
+      } catch {
+        /* */
+      }
       refreshModelSelect();
       setStatus(`模型：${formatGrokRuntimeLabel(rt)}`);
       notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条消息生效）`);
@@ -523,7 +561,9 @@ export function mountMeSoulChat(containerEl, ctx) {
       notify(e?.message || String(e));
       refreshModelSelect();
     }
-  };
+  }
+  modelSelect.onchange = () => onModelChange(modelSelect);
+  modelSelectComposer.onchange = () => onModelChange(modelSelectComposer);
 
   /** @type {VoiceInputSession | null} */
   let voiceSession = null;
@@ -581,12 +621,10 @@ export function mountMeSoulChat(containerEl, ctx) {
         setHint(s);
         if (s.includes('聆听') || s.includes('麦克风')) setStatus('听…');
       },
-      onPartial: (text) => {
-        const joined = voiceBaseText
-          ? `${voiceBaseText.replace(/\s+$/, '')} ${text}`.trim()
-          : text;
-        inputEl.value = joined;
-        autoGrow();
+      // Do NOT stream into the input — wait until user stops (avoids duplicates & flicker)
+      onPartial: () => {
+        setHint('聆听中…');
+        setStatus('听…');
       },
       onError: (err) => {
         notify(err?.message || String(err));
@@ -596,6 +634,8 @@ export function mountMeSoulChat(containerEl, ctx) {
     });
     voiceSession = session;
     setVoiceUi(true);
+    setHint('聆听中… 再说完后点一次 🎤');
+    setStatus('听…');
     try {
       await session.start();
     } catch (e) {
@@ -614,17 +654,28 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
     const session = voiceSession;
     voiceSession = null;
+    const base = voiceBaseText;
     try {
-      const text = await session.stop();
-      if (text) {
-        const joined = voiceBaseText
-          ? `${voiceBaseText.replace(/\s+$/, '')} ${text}`.trim()
-          : text;
-        inputEl.value = joined;
-        autoGrow();
-        if (sendAfter && plugin.settings.voiceAutoSend) {
-          setTimeout(() => send(), 30);
-        }
+      setHint('识别中…');
+      setStatus('识别…');
+      const raw = await session.stop();
+      if (!raw) {
+        notify('没有识别到语音');
+        return;
+      }
+      // Typeless-style polish (local + optional LLM) before a single write
+      setHint('整理中…');
+      setStatus('整理…');
+      const polished = await polishDictation(raw, {
+        apiKey: resolveXaiApiKey(plugin.settings),
+        model: plugin.settings.voicePolishModel || 'grok-3-mini',
+      });
+      const finalText = polished || raw;
+      inputEl.value = appendPolished(base, finalText, joinSegments);
+      autoGrow();
+      setHint('');
+      if (sendAfter && plugin.settings.voiceAutoSend) {
+        setTimeout(() => send(), 30);
       }
     } catch (e) {
       notify(e?.message || String(e));
@@ -806,6 +857,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     const map = {
       'me-digest': 'Grok 消化笔记 → 待审 wiki（可删）',
       'me-write-insight': '沉淀心迹（对你的认知草案，非聊笔记）',
+      'me-reflect-feedback': '根据具体反馈反思并写入记忆（确认门）',
       'me-care-check': '检查牵挂',
       'me-soul-promote': '清洗 Wiki→升格 Soul',
       memorized: '写入/重建向量记忆库',
@@ -818,11 +870,26 @@ export function mountMeSoulChat(containerEl, ctx) {
 
   // ---------- messages ----------
   function appendWelcome() {
-    const w = logEl.createDiv({ cls: 'me-soul-msg me-soul-agent me-soul-welcome' });
+    const w = logEl.createDiv({
+      cls:
+        'me-soul-msg me-soul-agent me-soul-welcome' +
+        (mode === 'fullscreen' ? ' me-soul-welcome--hero' : ''),
+    });
     const body = w.createDiv({ cls: 'me-soul-msg-body' });
     const mobile =
       typeof navigator !== 'undefined' &&
       /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+    if (mode === 'fullscreen') {
+      const name = plugin.settings.agentName || 'Agent';
+      body.createDiv({
+        cls: 'me-soul-welcome-title',
+        text: name,
+      });
+      body.createDiv({
+        cls: 'me-soul-welcome-sub',
+        text: '有什么想聊的？写笔记时也可用快捷键召唤命令条。',
+      });
+    }
     const tips = body.createDiv({ cls: 'me-soul-welcome-tips' });
     for (const t of ['@ 引用笔记', '/ 技能', '粘贴文件 → raw', '点击 🎤 说话']) {
       tips.createSpan({ cls: 'me-soul-tip', text: t });
@@ -1072,21 +1139,196 @@ export function mountMeSoulChat(containerEl, ctx) {
 
   function appendFooter(msgDiv, fullText) {
     const foot = msgDiv.createDiv({ cls: 'me-soul-msg-foot' });
-    const up = foot.createEl('button', { cls: 'me-soul-foot-btn', text: '👍' });
-    const down = foot.createEl('button', { cls: 'me-soul-foot-btn', text: '👎' });
-    const copy = foot.createEl('button', { cls: 'me-soul-foot-btn', text: '⧉' });
-    up.onclick = async () => {
-      await writeFeedback(app, '👍', fullText);
-      up.addClass('is-voted');
-      down.removeClass('is-voted');
-      notify('已记录 👍 → feedback');
+    const up = foot.createEl('button', {
+      cls: 'me-soul-foot-btn',
+      attr: { type: 'button', title: '有用（再点取消）', 'aria-label': '有用' },
+      text: '👍',
+    });
+    const down = foot.createEl('button', {
+      cls: 'me-soul-foot-btn',
+      attr: { type: 'button', title: '不佳（再点取消）', 'aria-label': '不佳' },
+      text: '👎',
+    });
+    const fbBtn = foot.createEl('button', {
+      cls: 'me-soul-foot-btn me-soul-foot-btn--feedback',
+      attr: {
+        type: 'button',
+        title: '写具体反馈 → AI 反思并写入记忆（需确认）',
+        'aria-label': '写反馈',
+      },
+      text: '反馈',
+    });
+    const copy = foot.createEl('button', {
+      cls: 'me-soul-foot-btn',
+      attr: { type: 'button', title: '复制', 'aria-label': '复制' },
+      text: '⧉',
+    });
+
+    /** @type {'up' | 'down' | null} */
+    let vote = null;
+    /** @type {string | null} */
+    let fbId = null;
+    let fbBusy = false;
+
+    const compose = msgDiv.createDiv({ cls: 'me-soul-feedback-compose' });
+    compose.style.display = 'none';
+    compose.createDiv({
+      cls: 'me-soul-feedback-hint',
+      text: '写清楚希望以后怎样。提交后会反思并生成待确认的记忆更新（点赞本身不会自动改人格）。',
+    });
+    const ta = compose.createEl('textarea', {
+      cls: 'me-soul-feedback-input',
+      attr: {
+        rows: '3',
+        placeholder: '例如：少用客服腔；解题先给思路再给答案；这段公式讲错了…',
+      },
+    });
+    const composeRow = compose.createDiv({ cls: 'me-soul-feedback-actions' });
+    const sendFb = composeRow.createEl('button', {
+      cls: 'me-soul-feedback-send',
+      attr: { type: 'button' },
+      text: '提交并反思',
+    });
+    const cancelFb = composeRow.createEl('button', {
+      cls: 'me-soul-feedback-cancel',
+      attr: { type: 'button' },
+      text: '收起',
+    });
+
+    function paintVote() {
+      up.toggleClass('is-voted', vote === 'up');
+      down.toggleClass('is-voted', vote === 'down');
+      fbBtn.toggleClass('is-open', compose.style.display !== 'none');
+    }
+
+    /**
+     * @param {'up' | 'down'} next
+     */
+    async function setVote(next) {
+      if (fbBusy) return;
+      fbBusy = true;
+      try {
+        if (vote === next) {
+          // cancel
+          if (fbId) {
+            await updateFeedbackVote(app, fbId, null);
+          }
+          vote = null;
+          fbId = null;
+          paintVote();
+          notify('已取消评价');
+          return;
+        }
+        const emoji = next === 'up' ? '👍' : '👎';
+        if (!fbId) {
+          fbId = makeFeedbackId();
+          await appendFeedbackEntry(app, {
+            id: fbId,
+            vote: emoji,
+            excerpt: fullText,
+          });
+        } else {
+          await updateFeedbackVote(app, fbId, emoji);
+        }
+        vote = next;
+        paintVote();
+        notify(
+          next === 'up'
+            ? '已记录 👍（再点可取消；写「反馈」才会触发反思）'
+            : '已记录 👎（再点可取消；写「反馈」才会触发反思）'
+        );
+      } catch (e) {
+        notify(e?.message || '反馈写入失败');
+      } finally {
+        fbBusy = false;
+      }
+    }
+
+    up.onclick = () => setVote('up');
+    down.onclick = () => setVote('down');
+
+    fbBtn.onclick = () => {
+      const open = compose.style.display === 'none';
+      compose.style.display = open ? '' : 'none';
+      paintVote();
+      if (open) {
+        requestAnimationFrame(() => ta.focus());
+      }
     };
-    down.onclick = async () => {
-      await writeFeedback(app, '👎', fullText);
-      down.addClass('is-voted');
-      up.removeClass('is-voted');
-      notify('已记录 👎 → feedback');
+    cancelFb.onclick = () => {
+      compose.style.display = 'none';
+      paintVote();
     };
+
+    sendFb.onclick = async () => {
+      const note = (ta.value || '').trim();
+      if (!note) {
+        notify('请先写一点具体反馈');
+        return;
+      }
+      if (busy || fbBusy) {
+        notify('请等待当前回复结束');
+        return;
+      }
+      fbBusy = true;
+      sendFb.setAttr('disabled', 'true');
+      try {
+        const emoji = vote === 'up' ? '👍' : vote === 'down' ? '👎' : '📝';
+        if (!fbId) {
+          fbId = makeFeedbackId();
+          await appendFeedbackEntry(app, {
+            id: fbId,
+            vote: emoji,
+            excerpt: fullText,
+            note,
+          });
+        } else {
+          await updateFeedbackVote(app, fbId, emoji, { note });
+        }
+        if (!vote && emoji === '📝') {
+          // no thumbs; leave vote null but file has 📝
+        }
+        paintVote();
+        compose.style.display = 'none';
+        paintVote();
+        ta.value = '';
+
+        // Reflect into memory via skill (confirm gate)
+        const userPayload = [
+          '【用户对上一条回复的具体反馈】',
+          `评价：${emoji}`,
+          '',
+          '## 原回复摘录',
+          String(fullText || '').slice(0, 2500),
+          '',
+          '## 用户反馈',
+          note,
+          '',
+          '请按 me-reflect-feedback 起草 insight/pending 并输出确认卡。',
+        ].join('\n');
+
+        notify('已记录反馈，正在反思…');
+        setBusy(true);
+        try {
+          await runSkillWithGrok(
+            { id: 'me-reflect-feedback', label: '/me-reflect-feedback' },
+            userPayload,
+            []
+          );
+          setStatus('就绪');
+        } finally {
+          setBusy(false);
+        }
+      } catch (e) {
+        notify(e?.message || '反馈反思失败');
+        setStatus('失败');
+        setBusy(false);
+      } finally {
+        fbBusy = false;
+        sendFb.removeAttribute('disabled');
+      }
+    };
+
     copy.onclick = async () => {
       await navigator.clipboard.writeText(fullText || '');
       notify('已复制');
@@ -1603,25 +1845,6 @@ async function composeMessage(app, text, chips, opts = {}) {
     enriched.push({ ...c, content });
   }
   return composeWithContext(text, enriched, { maxChars });
-}
-
-async function writeFeedback(app, vote, text) {
-  const dir = 'agent-inbox/soul/feedback';
-  await ensureFolder(app, dir);
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  const path = `${dir}/${date}.md`;
-  const excerpt = String(text || '').slice(0, 600);
-  const entry = `\n## ${time} ${vote}\n\n> ${excerpt.replace(/\n/g, '\n> ')}\n`;
-  const f = app.vault.getAbstractFileByPath(path);
-  if (f) {
-    const old = await app.vault.read(f);
-    await app.vault.modify(f, old + entry);
-  } else {
-    await app.vault.create(path, `# Feedback ${date}\n${entry}`);
-  }
 }
 
 async function vaultWrite(app, rel, content) {

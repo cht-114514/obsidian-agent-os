@@ -8,7 +8,9 @@ import {
   joinSegments,
   accumulateTranscript,
   displayTranscript,
+  looksLikeSupersedingStitch,
 } from '../src/voice-stt.js';
+import { polishDictationLocal, appendPolished } from '../src/voice-polish.js';
 
 describe('voice-stt helpers', () => {
   it('downsample halves length at 2x rate', () => {
@@ -144,18 +146,26 @@ describe('accumulateTranscript', () => {
     assert.equal(r.display, 'hello world and more');
   });
 
-  it('transcript.done prefers server text else local join', () => {
+  it('transcript.done uses local join; superseding server text wins', () => {
     const local = accumulateTranscript(
       { committed: '已提交', interim: '未定' },
       { type: 'transcript.done', text: '' }
     );
     assert.equal(local.display, '已提交未定');
 
-    const server = accumulateTranscript(
+    // Unrelated server text should not blindly replace longer local (avoid wipe)
+    const unrelated = accumulateTranscript(
       { committed: '已提交', interim: '未定' },
-      { type: 'transcript.done', text: 'server full text' }
+      { type: 'transcript.done', text: 'xyz' }
     );
-    assert.equal(server.display, 'server full text');
+    assert.equal(unrelated.display, '已提交未定');
+
+    // Superseding stitch replaces
+    const server = accumulateTranscript(
+      { committed: '已提交', interim: '' },
+      { type: 'transcript.done', text: '已提交完整一句' }
+    );
+    assert.equal(server.display, '已提交完整一句');
   });
 
   it('displayTranscript joins state', () => {
@@ -163,5 +173,52 @@ describe('accumulateTranscript', () => {
       displayTranscript({ committed: 'A', interim: 'B' }),
       'A B'
     );
+  });
+});
+
+describe('accumulateTranscript supersede', () => {
+  it('does not double when speech_final re-stitches the whole utterance', () => {
+    let r = accumulateTranscript(
+      { committed: '', interim: '' },
+      { type: 'transcript.partial', text: '今天讨论项目进度', is_final: true, speech_final: false }
+    );
+    r = accumulateTranscript(r.state, {
+      type: 'transcript.partial',
+      text: '今天讨论项目进度然后还有预算',
+      is_final: true,
+      speech_final: true,
+    });
+    // full stitch supersedes — not "今天…今天…"
+    assert.equal(r.display, '今天讨论项目进度然后还有预算');
+    assert.ok(!/今天讨论项目进度今天/.test(r.display));
+  });
+
+  it('looksLikeSupersedingStitch detects inclusion', () => {
+    assert.equal(looksLikeSupersedingStitch('今天讨论', '今天讨论项目进度'), true);
+    assert.equal(looksLikeSupersedingStitch('abc def', 'xyz'), false);
+  });
+});
+
+describe('polishDictationLocal', () => {
+  it('strips Chinese fillers and stutters', () => {
+    const out = polishDictationLocal('嗯那个今天今天就是说去开会');
+    assert.equal(out.includes('嗯'), false);
+    assert.equal(out.includes('那个'), false);
+    assert.equal(out.includes('就是说'), false);
+    assert.match(out, /今天/);
+    assert.match(out, /开会/);
+    // stutter collapsed
+    assert.equal(/今天今天/.test(out), false);
+  });
+
+  it('strips English fillers', () => {
+    const out = polishDictationLocal('um I mean we should uh ship today');
+    assert.equal(/\bum\b/i.test(out), false);
+    assert.equal(/\buh\b/i.test(out), false);
+    assert.match(out, /ship today/i);
+  });
+
+  it('appendPolished joins CJK without space', () => {
+    assert.equal(appendPolished('已有', '补充'), '已有补充');
   });
 });

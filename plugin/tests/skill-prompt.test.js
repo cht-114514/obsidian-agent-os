@@ -52,6 +52,7 @@ describe('skill-prompt', () => {
     for (const id of [
       'me-digest',
       'me-write-insight',
+      'me-reflect-feedback',
       'me-care-check',
       'me-soul-promote',
       'memorized',

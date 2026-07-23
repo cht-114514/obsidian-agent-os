@@ -235,12 +235,24 @@ export class GrokAcpClient {
       );
       return { stopReason: res?.stopReason || 'end_turn' };
     } catch (e) {
-      const msg = e?.message || String(e);
+      let msg = e?.message || String(e);
+      // Friendlier third-party gateway errors
+      if (
+        this.isThirdParty &&
+        /tool_calls.*name|empty string|invalid_request_error/i.test(msg)
+      ) {
+        msg =
+          `${msg}\n\n提示：第三方接口常与流式 tool_calls 不兼容。` +
+          `插件已在第三方配置中关闭 stream_tool_calls；请切回 SuperGrok 再切回第三方（重启内核），或新开会话后再试。` +
+          `若仍失败，该模型/网关可能不支持 Agent 工具调用。`;
+        // Drop poisoned session so next prompt starts clean
+        this.sessionId = null;
+      }
       const hint = this.stderrBuf.trim().slice(-500);
       if (hint && !msg.includes(hint.slice(0, 40))) {
         throw new Error(`${msg}\n\n--- grok stderr ---\n${hint}`);
       }
-      throw e;
+      throw new Error(msg);
     } finally {
       this.handlers = null;
     }
