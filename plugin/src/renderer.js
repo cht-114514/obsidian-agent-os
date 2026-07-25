@@ -27,7 +27,8 @@ export function renderAgentMessage(agentText, opts = {}) {
         return `<div class="me-soul-attachment" data-path="${escapeHtml(b.meta?.path || '')}">📎 ${escapeHtml(b.meta?.path || b.content)}</div>`;
       case 'text':
       default:
-        return `<div class="me-soul-text">${escapeHtml(b.content)}</div>`;
+        // Mark for post-pass Markdown+LaTeX render (escape keeps payload safe in HTML)
+        return `<div class="me-soul-text me-soul-needs-md">${escapeHtml(b.content)}</div>`;
     }
   });
 

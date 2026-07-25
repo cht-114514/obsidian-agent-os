@@ -1,7 +1,7 @@
 /**
  * Cursor-style floating command bar for Obsidian Agent OS.
- * Summon with hotkey → NL intent → stream → apply to editor (or show only).
- * Includes model switcher, feedback, and thinking animation.
+ * Summon with hotkey → multi-turn NL → stream → apply to editor (or show only).
+ * Panel is draggable and non-blocking so the note / cursor stay usable.
  */
 import { MarkdownView } from 'obsidian';
 import { parseApplyResponse, stripApplyHeaderForPreview } from './intent.js';
@@ -22,6 +22,8 @@ import {
   updateFeedbackVote,
 } from './feedback-store.js';
 
+const POSITION_KEY = 'me-soul-cmdbar-pos';
+
 /**
  * @param {import('obsidian').App} app
  * @param {any} plugin MeSoulPlugin
@@ -32,8 +34,12 @@ export function createCommandBarController(app, plugin, deps) {
 
   /** @type {HTMLElement | null} */
   let root = null;
+  /** @type {HTMLElement | null} */
+  let panelEl = null;
   /** @type {HTMLTextAreaElement | null} */
   let inputEl = null;
+  /** @type {HTMLElement | null} */
+  let transcriptEl = null;
   /** @type {HTMLElement | null} */
   let resultEl = null;
   /** @type {HTMLElement | null} */
@@ -64,10 +70,16 @@ export function createCommandBarController(app, plugin, deps) {
   let lastFbId = null;
   /** @type {'up' | 'down' | null} */
   let lastVote = null;
+  /** @type {Array<{ role: 'user' | 'assistant', text: string }>} */
+  let turns = [];
   /** @type {(() => void) | null} */
   let removeKeyHandler = null;
   /** @type {(() => void) | null} */
-  let removePointerHandler = null;
+  let removeContextListeners = null;
+  /** @type {(() => void) | null} */
+  let removeDragHandlers = null;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let contextPoll = null;
 
   function isEnabled() {
     return plugin.settings.commandBarEnabled !== false;
@@ -86,21 +98,151 @@ export function createCommandBarController(app, plugin, deps) {
     }
   }
 
+  function loadSavedPosition() {
+    try {
+      const raw = localStorage.getItem(POSITION_KEY);
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (typeof p?.left === 'number' && typeof p?.top === 'number') {
+        return { left: p.left, top: p.top };
+      }
+    } catch {
+      /* */
+    }
+    return null;
+  }
+
+  function savePosition(left, top) {
+    try {
+      localStorage.setItem(POSITION_KEY, JSON.stringify({ left, top }));
+    } catch {
+      /* */
+    }
+  }
+
+  /**
+   * Place panel at default (centered top) or restored position.
+   * @param {{ forceDefault?: boolean }} [opts]
+   */
+  function placePanel(opts = {}) {
+    if (!panelEl) return;
+    const saved = opts.forceDefault ? null : loadSavedPosition();
+    const maxW = Math.min(560, window.innerWidth - 24);
+    panelEl.style.width = `${maxW}px`;
+    panelEl.style.maxWidth = 'calc(100vw - 24px)';
+
+    if (saved) {
+      const left = Math.max(8, Math.min(saved.left, window.innerWidth - 80));
+      const top = Math.max(8, Math.min(saved.top, window.innerHeight - 80));
+      panelEl.classList.add('is-positioned');
+      panelEl.style.left = `${left}px`;
+      panelEl.style.top = `${top}px`;
+      panelEl.style.right = 'auto';
+      panelEl.style.transform = 'none';
+    } else {
+      panelEl.classList.remove('is-positioned');
+      panelEl.style.left = '50%';
+      panelEl.style.top = '12vh';
+      panelEl.style.right = 'auto';
+      panelEl.style.transform = 'translateX(-50%)';
+    }
+  }
+
+  /**
+   * Drag panel by the header (skip interactive controls).
+   * @param {HTMLElement} handle
+   * @param {HTMLElement} panel
+   */
+  function setupDrag(handle, panel) {
+    if (removeDragHandlers) {
+      removeDragHandlers();
+      removeDragHandlers = null;
+    }
+
+    let dragging = false;
+    /** @type {number} */
+    let startX = 0;
+    /** @type {number} */
+    let startY = 0;
+    /** @type {number} */
+    let origLeft = 0;
+    /** @type {number} */
+    let origTop = 0;
+
+    const onPointerDown = (ev) => {
+      if (ev.button != null && ev.button !== 0) return;
+      const t = /** @type {HTMLElement} */ (ev.target);
+      if (t.closest('button, select, input, textarea, a, option')) return;
+      dragging = true;
+      const rect = panel.getBoundingClientRect();
+      panel.classList.add('is-positioned', 'is-dragging');
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.transform = 'none';
+      panel.style.right = 'auto';
+      startX = ev.clientX;
+      startY = ev.clientY;
+      origLeft = rect.left;
+      origTop = rect.top;
+      try {
+        handle.setPointerCapture(ev.pointerId);
+      } catch {
+        /* */
+      }
+      ev.preventDefault();
+    };
+
+    const onPointerMove = (ev) => {
+      if (!dragging) return;
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      const left = Math.max(8, Math.min(origLeft + dx, window.innerWidth - 80));
+      const top = Math.max(8, Math.min(origTop + dy, window.innerHeight - 80));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+    };
+
+    const onPointerUp = (ev) => {
+      if (!dragging) return;
+      dragging = false;
+      panel.classList.remove('is-dragging');
+      const left = parseFloat(panel.style.left) || 0;
+      const top = parseFloat(panel.style.top) || 0;
+      savePosition(left, top);
+      try {
+        handle.releasePointerCapture(ev.pointerId);
+      } catch {
+        /* */
+      }
+    };
+
+    handle.addEventListener('pointerdown', onPointerDown);
+    handle.addEventListener('pointermove', onPointerMove);
+    handle.addEventListener('pointerup', onPointerUp);
+    handle.addEventListener('pointercancel', onPointerUp);
+
+    removeDragHandlers = () => {
+      handle.removeEventListener('pointerdown', onPointerDown);
+      handle.removeEventListener('pointermove', onPointerMove);
+      handle.removeEventListener('pointerup', onPointerUp);
+      handle.removeEventListener('pointercancel', onPointerUp);
+    };
+  }
+
   function ensureDom() {
     if (root) return;
     root = document.body.createDiv({ cls: 'me-soul-cmdbar-root' });
     root.setAttr('aria-hidden', 'true');
 
-    const backdrop = root.createDiv({ cls: 'me-soul-cmdbar-backdrop' });
-    backdrop.onclick = () => {
-      if (!busy) close();
-    };
+    // No full-screen backdrop: note stays visible and interactive.
+    // Clicking outside does not steal focus / block the editor.
 
-    const panel = root.createDiv({ cls: 'me-soul-cmdbar-panel' });
-    panel.setAttr('role', 'dialog');
-    panel.setAttr('aria-label', 'Agent 命令条');
+    panelEl = root.createDiv({ cls: 'me-soul-cmdbar-panel' });
+    panelEl.setAttr('role', 'dialog');
+    panelEl.setAttr('aria-label', 'Agent 命令条');
 
-    const head = panel.createDiv({ cls: 'me-soul-cmdbar-head' });
+    const head = panelEl.createDiv({ cls: 'me-soul-cmdbar-head' });
+    head.setAttr('title', '拖动标题栏可移动面板');
     const brand = head.createDiv({ cls: 'me-soul-cmdbar-brand' });
     brand.createSpan({ cls: 'me-soul-cmdbar-dot', attr: { 'aria-hidden': 'true' } });
     brand.createSpan({ cls: 'me-soul-cmdbar-title', text: plugin.settings.agentName || 'Agent' });
@@ -132,73 +274,36 @@ export function createCommandBarController(app, plugin, deps) {
       close();
     };
 
-    const ctxLine = panel.createDiv({ cls: 'me-soul-cmdbar-context' });
+    setupDrag(head, panelEl);
+
+    const ctxLine = panelEl.createDiv({ cls: 'me-soul-cmdbar-context' });
     ctxLine.createSpan({ cls: 'me-soul-cmdbar-context-label', text: '上下文' });
     const ctxPath = ctxLine.createSpan({ cls: 'me-soul-cmdbar-context-path', text: '—' });
-    panel._ctxPath = ctxPath;
+    panelEl._ctxPath = ctxPath;
+    const ctxCursor = ctxLine.createSpan({ cls: 'me-soul-cmdbar-context-cursor', text: '' });
+    panelEl._ctxCursor = ctxCursor;
     const ctxSel = ctxLine.createSpan({ cls: 'me-soul-cmdbar-context-sel', text: '' });
-    panel._ctxSel = ctxSel;
-
-    inputEl = panel.createEl('textarea', {
-      cls: 'me-soul-cmdbar-input',
+    panelEl._ctxSel = ctxSel;
+    const refreshCtxBtn = ctxLine.createEl('button', {
+      cls: 'me-soul-cmdbar-ctx-refresh',
       attr: {
-        rows: '2',
-        placeholder: '改短一点 · 续写两句 · 这段在说什么…',
-        'aria-label': '指令',
+        type: 'button',
+        title: '从当前编辑器刷新光标/选区（也可在笔记里点一下）',
       },
+      text: '刷新',
     });
-
-    inputEl.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape') {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (busy) {
-          try {
-            plugin.acp?.cancel?.();
-          } catch {
-            /* */
-          }
-        }
-        close();
-        return;
-      }
-      if (ev.key === 'Enter' && !ev.shiftKey) {
-        ev.preventDefault();
-        if (!busy) void submit();
-        else {
-          try {
-            plugin.acp?.cancel?.();
-          } catch {
-            /* */
-          }
-        }
-      }
-    });
-
-    const row = panel.createDiv({ cls: 'me-soul-cmdbar-row' });
-    sendBtn = row.createEl('button', {
-      cls: 'me-soul-cmdbar-send',
-      attr: { type: 'button' },
-      text: '发送',
-    });
-    sendBtn.onclick = () => {
-      if (busy) {
-        try {
-          plugin.acp?.cancel?.();
-        } catch {
-          /* */
-        }
-      } else {
-        void submit();
-      }
+    refreshCtxBtn.onclick = (ev) => {
+      ev.preventDefault();
+      refreshContextFromEditor({ notifyIfMoved: true });
     };
-    row.createSpan({
-      cls: 'me-soul-cmdbar-hint',
-      text: 'Enter 发送 · Shift+Enter 换行 · Esc 关闭',
-    });
+
+    // Multi-turn transcript (prior messages)
+    transcriptEl = panelEl.createDiv({ cls: 'me-soul-cmdbar-transcript' });
+    transcriptEl.style.display = 'none';
+    transcriptEl.setAttr('aria-live', 'polite');
 
     // Thinking animation (shown while busy, before/without text)
-    thinkingEl = panel.createDiv({ cls: 'me-soul-cmdbar-thinking' });
+    thinkingEl = panelEl.createDiv({ cls: 'me-soul-cmdbar-thinking' });
     thinkingEl.style.display = 'none';
     thinkingEl.setAttr('aria-live', 'polite');
     const thinkInner = thinkingEl.createDiv({ cls: 'me-soul-cmdbar-thinking-inner' });
@@ -209,13 +314,14 @@ export function createCommandBarController(app, plugin, deps) {
     dots.createSpan({ cls: 'me-soul-cmdbar-dot-bounce' });
     const thinkTip = thinkingEl.createDiv({ cls: 'me-soul-cmdbar-thinking-tip' });
     thinkTip.setText('');
-    panel._thinkTip = thinkTip;
+    panelEl._thinkTip = thinkTip;
 
-    resultEl = panel.createDiv({ cls: 'me-soul-cmdbar-result' });
+    // Latest assistant reply (streaming + final)
+    resultEl = panelEl.createDiv({ cls: 'me-soul-cmdbar-result' });
     resultEl.style.display = 'none';
 
     // Apply actions: insert / replace / copy
-    actionsEl = panel.createDiv({ cls: 'me-soul-cmdbar-actions' });
+    actionsEl = panelEl.createDiv({ cls: 'me-soul-cmdbar-actions' });
     actionsEl.style.display = 'none';
 
     const btnInsert = actionsEl.createEl('button', {
@@ -223,14 +329,20 @@ export function createCommandBarController(app, plugin, deps) {
       attr: { type: 'button' },
       text: '插入光标处',
     });
-    btnInsert.onclick = () => manualApply('insert_at_cursor');
+    btnInsert.onclick = () => {
+      refreshContextFromEditor();
+      manualApply('insert_at_cursor');
+    };
 
     const btnReplace = actionsEl.createEl('button', {
       cls: 'me-soul-cmdbar-action',
       attr: { type: 'button' },
       text: '替换选区',
     });
-    btnReplace.onclick = () => manualApply('replace_selection');
+    btnReplace.onclick = () => {
+      refreshContextFromEditor();
+      manualApply('replace_selection');
+    };
 
     const btnCopy = actionsEl.createEl('button', {
       cls: 'me-soul-cmdbar-action',
@@ -247,7 +359,7 @@ export function createCommandBarController(app, plugin, deps) {
     };
 
     // Feedback row (after a reply)
-    feedbackEl = panel.createDiv({ cls: 'me-soul-cmdbar-feedback' });
+    feedbackEl = panelEl.createDiv({ cls: 'me-soul-cmdbar-feedback' });
     feedbackEl.style.display = 'none';
 
     const fbUp = feedbackEl.createEl('button', {
@@ -265,13 +377,13 @@ export function createCommandBarController(app, plugin, deps) {
       attr: { type: 'button', title: '写具体反馈' },
       text: '反馈',
     });
-    panel._fbUp = fbUp;
-    panel._fbDown = fbDown;
+    panelEl._fbUp = fbUp;
+    panelEl._fbDown = fbDown;
 
     fbUp.onclick = () => void setCmdVote('up');
     fbDown.onclick = () => void setCmdVote('down');
 
-    const fbCompose = panel.createDiv({ cls: 'me-soul-cmdbar-fb-compose' });
+    const fbCompose = panelEl.createDiv({ cls: 'me-soul-cmdbar-fb-compose' });
     fbCompose.style.display = 'none';
     fbCompose.createDiv({
       cls: 'me-soul-cmdbar-fb-hint',
@@ -295,8 +407,8 @@ export function createCommandBarController(app, plugin, deps) {
       attr: { type: 'button' },
       text: '收起',
     });
-    panel._fbCompose = fbCompose;
-    panel._fbTa = fbTa;
+    panelEl._fbCompose = fbCompose;
+    panelEl._fbTa = fbTa;
 
     fbWrite.onclick = () => {
       const open = fbCompose.style.display === 'none';
@@ -333,7 +445,67 @@ export function createCommandBarController(app, plugin, deps) {
       }
     };
 
+    // Composer at bottom — always available for follow-ups
+    inputEl = panelEl.createEl('textarea', {
+      cls: 'me-soul-cmdbar-input',
+      attr: {
+        rows: '2',
+        placeholder: '改短一点 · 续写两句 · 这段在说什么…（可连续追问）',
+        'aria-label': '指令',
+      },
+    });
+
+    inputEl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (busy) {
+          try {
+            plugin.acp?.cancel?.();
+          } catch {
+            /* */
+          }
+        }
+        close();
+        return;
+      }
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        if (!busy) void submit();
+        else {
+          try {
+            plugin.acp?.cancel?.();
+          } catch {
+            /* */
+          }
+        }
+      }
+    });
+
+    const row = panelEl.createDiv({ cls: 'me-soul-cmdbar-row' });
+    sendBtn = row.createEl('button', {
+      cls: 'me-soul-cmdbar-send',
+      attr: { type: 'button' },
+      text: '发送',
+    });
+    sendBtn.onclick = () => {
+      if (busy) {
+        try {
+          plugin.acp?.cancel?.();
+        } catch {
+          /* */
+        }
+      } else {
+        void submit();
+      }
+    };
+    row.createSpan({
+      cls: 'me-soul-cmdbar-hint',
+      text: 'Enter 发送 · 可多轮 · 拖标题移动 · Esc 关闭',
+    });
+
     refreshModelSelect();
+    placePanel();
   }
 
   function refreshModelSelect() {
@@ -387,10 +559,9 @@ export function createCommandBarController(app, plugin, deps) {
   }
 
   function paintVoteBtns() {
-    if (!root) return;
-    const panel = root.querySelector('.me-soul-cmdbar-panel');
-    const up = panel?._fbUp;
-    const down = panel?._fbDown;
+    if (!panelEl) return;
+    const up = panelEl._fbUp;
+    const down = panelEl._fbDown;
     if (up) up.toggleClass('is-voted', lastVote === 'up');
     if (down) down.toggleClass('is-voted', lastVote === 'down');
   }
@@ -467,9 +638,8 @@ export function createCommandBarController(app, plugin, deps) {
     if (!thinkingEl) return;
     thinkingEl.style.display = '';
     thinkingEl.addClass('is-active');
-    if (root) {
-      const panel = root.querySelector('.me-soul-cmdbar-panel');
-      const tipEl = panel?._thinkTip;
+    if (panelEl) {
+      const tipEl = panelEl._thinkTip;
       if (tipEl) {
         tipEl.setText(tip || '');
         tipEl.style.display = tip ? '' : 'none';
@@ -483,14 +653,70 @@ export function createCommandBarController(app, plugin, deps) {
     thinkingEl.removeClass('is-active');
   }
 
+  /**
+   * Re-read active editor cursor / selection into lastCapture + chrome.
+   * @param {{ notifyIfMoved?: boolean }} [opts]
+   */
+  function refreshContextFromEditor(opts = {}) {
+    const view = getMarkdownView();
+    const editor = view?.editor || lastEditor;
+    const file = view?.file || app.workspace.getActiveFile?.();
+    const path = file?.path || lastCapture?.path || null;
+    let noteBody = '';
+    try {
+      noteBody = editor?.getValue?.() || '';
+    } catch {
+      /* */
+    }
+    const prev = lastCapture;
+    lastEditor = editor || lastEditor;
+    lastCapture = captureEditorContext(editor, { path, noteBody });
+    paintContext(lastCapture);
+
+    if (opts.notifyIfMoved && prev && lastCapture) {
+      const moved =
+        prev.cursor?.line !== lastCapture.cursor?.line ||
+        prev.cursor?.ch !== lastCapture.cursor?.ch ||
+        prev.hasSelection !== lastCapture.hasSelection ||
+        prev.selection !== lastCapture.selection ||
+        prev.path !== lastCapture.path;
+      notify(
+        moved
+          ? `已刷新 · L${(lastCapture.cursor?.line ?? 0) + 1}:${(lastCapture.cursor?.ch ?? 0) + 1}`
+          : `光标未变 · L${(lastCapture.cursor?.line ?? 0) + 1}:${(lastCapture.cursor?.ch ?? 0) + 1}`
+      );
+    }
+  }
+
+  /**
+   * Update context chrome only when text actually changes.
+   * Any unnecessary DOM write clears window.getSelection() and blocks copy.
+   * @param {HTMLElement | null | undefined} el
+   * @param {string} next
+   */
+  function setTextIfChanged(el, next) {
+    if (!el) return;
+    const s = String(next ?? '');
+    if (el.textContent === s) return;
+    el.setText(s);
+  }
+
   function paintContext(capture) {
-    if (!root) return;
-    const panel = root.querySelector('.me-soul-cmdbar-panel');
-    if (!panel) return;
-    const pathEl = panel._ctxPath;
-    const selEl = panel._ctxSel;
-    if (pathEl) {
-      pathEl.setText(capture?.path || '（无活动笔记）');
+    if (!panelEl) return;
+    const pathEl = panelEl._ctxPath;
+    const cursorEl = panelEl._ctxCursor;
+    const selEl = panelEl._ctxSel;
+    setTextIfChanged(pathEl, capture?.path || '（无活动笔记）');
+    if (cursorEl) {
+      if (capture?.path || capture?.cursor) {
+        const line = (capture?.cursor?.line ?? 0) + 1;
+        const ch = (capture?.cursor?.ch ?? 0) + 1;
+        setTextIfChanged(cursorEl, ` · 光标 L${line}:${ch}`);
+        cursorEl.style.display = '';
+      } else {
+        setTextIfChanged(cursorEl, '');
+        cursorEl.style.display = 'none';
+      }
     }
     if (selEl) {
       if (capture?.hasSelection) {
@@ -499,13 +725,53 @@ export function createCommandBarController(app, plugin, deps) {
           capture.selection.length > 48
             ? capture.selection.slice(0, 48) + '…'
             : capture.selection;
-        selEl.setText(` · 选区 ${n} 字：「${preview.replace(/\s+/g, ' ')}」`);
+        setTextIfChanged(
+          selEl,
+          ` · 选区 ${n} 字：「${preview.replace(/\s+/g, ' ')}」`
+        );
         selEl.style.display = '';
       } else {
-        selEl.setText('');
+        setTextIfChanged(selEl, '');
         selEl.style.display = 'none';
       }
     }
+  }
+
+  /**
+   * Rebuild transcript. Latest assistant reply (if any) stays in resultEl
+   * with apply/feedback chrome — prior turns only appear here.
+   */
+  function paintTranscript() {
+    if (!transcriptEl) return;
+    transcriptEl.empty();
+    let list = turns;
+    // Keep newest assistant message out of the scroll log when result pane shows it
+    if (list.length && list[list.length - 1].role === 'assistant') {
+      list = list.slice(0, -1);
+    }
+    if (!list.length) {
+      transcriptEl.style.display = 'none';
+      return;
+    }
+    transcriptEl.style.display = '';
+    for (const turn of list) {
+      const bubble = transcriptEl.createDiv({
+        cls:
+          'me-soul-cmdbar-msg' +
+          (turn.role === 'user' ? ' is-user' : ' is-assistant'),
+      });
+      bubble.createDiv({
+        cls: 'me-soul-cmdbar-msg-role',
+        text: turn.role === 'user' ? '你' : plugin.settings.agentName || 'Agent',
+      });
+      bubble.createDiv({
+        cls: 'me-soul-cmdbar-msg-text',
+        text: turn.text,
+      });
+    }
+    requestAnimationFrame(() => {
+      if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    });
   }
 
   function showResult(text, { streaming = false } = {}) {
@@ -513,10 +779,23 @@ export function createCommandBarController(app, plugin, deps) {
     const has = !!(text && String(text).trim()) || streaming;
     resultEl.style.display = has ? '' : 'none';
     resultEl.empty();
-    resultEl.createDiv({
-      cls: 'me-soul-cmdbar-result-text' + (streaming ? ' is-streaming' : ''),
-      text: text || (streaming ? '' : ''),
-    });
+    if (has) {
+      resultEl.createDiv({
+        cls: 'me-soul-cmdbar-msg-role',
+        text: streaming
+          ? `${plugin.settings.agentName || 'Agent'} · 回复中`
+          : `${plugin.settings.agentName || 'Agent'} · 最新回复`,
+      });
+      const body = resultEl.createDiv({
+        cls: 'me-soul-cmdbar-result-text' + (streaming ? ' is-streaming' : ''),
+        text: text || (streaming ? '' : ''),
+      });
+      // Explicitly selectable / focusable for Cmd/Ctrl+C
+      body.setAttr('tabindex', '0');
+      body.setAttr('role', 'textbox');
+      body.setAttr('aria-readonly', 'true');
+      body.setAttr('aria-label', 'Agent 回复（可选中复制）');
+    }
     if (streaming && text) hideThinking();
   }
 
@@ -528,9 +807,8 @@ export function createCommandBarController(app, plugin, deps) {
   function showFeedbackRow(show) {
     if (!feedbackEl) return;
     feedbackEl.style.display = show ? '' : 'none';
-    if (!show && root) {
-      const panel = root.querySelector('.me-soul-cmdbar-panel');
-      if (panel?._fbCompose) panel._fbCompose.style.display = 'none';
+    if (!show && panelEl) {
+      if (panelEl._fbCompose) panelEl._fbCompose.style.display = 'none';
     }
     paintVoteBtns();
   }
@@ -540,17 +818,124 @@ export function createCommandBarController(app, plugin, deps) {
       notify('没有可应用的结果');
       return;
     }
-    const r = applyToEditor(lastEditor, mode, lastFullText);
+    // Re-read cursor right before apply so insert hits where the user last clicked
+    refreshContextFromEditor();
+    const editor = lastEditor;
+    if (!editor) {
+      notify('无活动编辑器');
+      return;
+    }
+    const r = applyToEditor(editor, mode, lastFullText);
     if (r.applied) {
-      notify(mode === 'replace_selection' ? '已替换选区' : '已插入');
-      // keep open so user can still feedback
+      notify(
+        mode === 'replace_selection'
+          ? '已替换选区'
+          : `已插入 L${(lastCapture?.cursor?.line ?? 0) + 1}:${(lastCapture?.cursor?.ch ?? 0) + 1}`
+      );
     } else {
       notify('未能应用（可能无选区）');
     }
   }
 
   /**
-   * @param {{ seedText?: string, forceOpen?: boolean }} [opts]
+   * True when the event (or current selection) is inside the floating panel.
+   * Must skip context refresh then — DOM writes clear the copy selection.
+   * @param {Event | null} [ev]
+   */
+  function isInteractionInsidePanel(ev) {
+    if (panelEl && ev?.target instanceof Node && panelEl.contains(ev.target)) {
+      return true;
+    }
+    try {
+      const sel = window.getSelection?.();
+      if (sel && sel.rangeCount > 0 && panelEl) {
+        const node = sel.anchorNode;
+        if (node && panelEl.contains(node)) return true;
+      }
+    } catch {
+      /* */
+    }
+    return false;
+  }
+
+  function attachContextListeners() {
+    detachContextListeners();
+
+    const onEditorActivity = (ev) => {
+      if (!isOpen()) return;
+      // Selecting / copying reply text lives in the panel — do not touch DOM
+      if (isInteractionInsidePanel(ev)) return;
+      refreshContextFromEditor();
+    };
+
+    // Clicks / selection in the note should update the chip without closing the bar
+    document.addEventListener('mouseup', onEditorActivity, true);
+    document.addEventListener('keyup', onEditorActivity, true);
+
+    const leafRef = app.workspace.on?.('active-leaf-change', () => {
+      if (!isOpen()) return;
+      if (isInteractionInsidePanel(null)) return;
+      refreshContextFromEditor();
+    });
+
+    // Light poll: CM selection changes don't always bubble as DOM events
+    contextPoll = setInterval(() => {
+      if (!isOpen() || busy) return;
+      // Don't mutate chrome while user is selecting text in the panel
+      if (isInteractionInsidePanel(null)) return;
+      try {
+        const view = getMarkdownView();
+        const ed = view?.editor;
+        if (!ed) return;
+        const c = ed.getCursor?.('from') || ed.getCursor?.();
+        const sel = String(ed.getSelection?.() || '');
+        if (!lastCapture) {
+          refreshContextFromEditor();
+          return;
+        }
+        if (
+          c &&
+          (c.line !== lastCapture.cursor?.line ||
+            c.ch !== lastCapture.cursor?.ch ||
+            sel !== lastCapture.selection)
+        ) {
+          refreshContextFromEditor();
+        }
+      } catch {
+        /* */
+      }
+    }, 400);
+
+    removeContextListeners = () => {
+      document.removeEventListener('mouseup', onEditorActivity, true);
+      document.removeEventListener('keyup', onEditorActivity, true);
+      if (leafRef) {
+        try {
+          app.workspace.offref?.(leafRef);
+        } catch {
+          /* */
+        }
+      }
+      if (contextPoll) {
+        clearInterval(contextPoll);
+        contextPoll = null;
+      }
+    };
+  }
+
+  function detachContextListeners() {
+    if (removeContextListeners) {
+      removeContextListeners();
+      removeContextListeners = null;
+    }
+    if (contextPoll) {
+      clearInterval(contextPoll);
+      contextPoll = null;
+    }
+  }
+
+  /**
+   * @param {{ seedText?: string, forceOpen?: boolean, keepHistory?: boolean }} [opts]
    */
   function open(opts = {}) {
     if (!isEnabled() && !opts.forceOpen) {
@@ -558,41 +943,31 @@ export function createCommandBarController(app, plugin, deps) {
       return;
     }
     ensureDom();
-    if (!root) return;
+    if (!root || !panelEl) return;
 
-    const view = getMarkdownView();
-    const editor = view?.editor || null;
-    const file = view?.file || app.workspace.getActiveFile?.();
-    const path = file?.path || null;
-    let noteBody = '';
-    try {
-      noteBody = editor?.getValue?.() || '';
-    } catch {
-      /* */
+    // Fresh session unless re-open while already open with keepHistory
+    if (!isOpen() || !opts.keepHistory) {
+      turns = [];
+      lastFullText = '';
+      lastUserPrompt = '';
+      lastMode = 'show_only';
+      lastFbId = null;
+      lastVote = null;
+      paintTranscript();
+      showResult('');
+      showFallbackActions(false);
+      showFeedbackRow(false);
     }
 
-    lastEditor = editor;
-    lastCapture = captureEditorContext(editor, {
-      path,
-      noteBody,
-    });
-    lastFullText = '';
-    lastUserPrompt = '';
-    lastMode = 'show_only';
-    lastFbId = null;
-    lastVote = null;
+    refreshContextFromEditor();
+    placePanel();
 
     root.addClass('is-open');
     root.setAttr('aria-hidden', 'false');
-    paintContext(lastCapture);
-    showResult('');
-    showFallbackActions(false);
-    showFeedbackRow(false);
     hideThinking();
     setBusy(false);
     refreshModelSelect();
 
-    // update title with agent name
     const title = root.querySelector('.me-soul-cmdbar-title');
     if (title) title.setText(plugin.settings.agentName || 'Agent');
 
@@ -600,20 +975,27 @@ export function createCommandBarController(app, plugin, deps) {
       if (opts.seedText != null) inputEl.value = opts.seedText;
       requestAnimationFrame(() => {
         inputEl?.focus();
-        inputEl?.select?.();
+        if (opts.seedText != null) inputEl?.select?.();
       });
     }
 
     if (removeKeyHandler) removeKeyHandler();
     const onKey = (ev) => {
       if (ev.key === 'Escape' && root?.hasClass('is-open')) {
-        if (document.activeElement === inputEl) return;
-        ev.preventDefault();
-        close();
+        // Don't steal Esc from editor when focus is in note (panel is non-modal)
+        const ae = document.activeElement;
+        const inPanel = !!(panelEl && ae && panelEl.contains(ae));
+        if (!inPanel && ae !== inputEl) return;
+        if (document.activeElement === inputEl || inPanel) {
+          ev.preventDefault();
+          close();
+        }
       }
     };
     document.addEventListener('keydown', onKey, true);
     removeKeyHandler = () => document.removeEventListener('keydown', onKey, true);
+
+    attachContextListeners();
   }
 
   function close() {
@@ -633,10 +1015,9 @@ export function createCommandBarController(app, plugin, deps) {
       removeKeyHandler();
       removeKeyHandler = null;
     }
-    if (removePointerHandler) {
-      removePointerHandler();
-      removePointerHandler = null;
-    }
+    detachContextListeners();
+    // Clear multi-turn session on close
+    turns = [];
     try {
       const view = getMarkdownView();
       view?.editor?.focus?.();
@@ -660,22 +1041,14 @@ export function createCommandBarController(app, plugin, deps) {
     if (!text) return;
     lastUserPrompt = text;
 
-    const view = getMarkdownView();
-    const editor = view?.editor || lastEditor;
-    const file = view?.file || app.workspace.getActiveFile?.();
-    const path = file?.path || lastCapture?.path || null;
-    let noteBody = '';
-    try {
-      noteBody = editor?.getValue?.() || '';
-    } catch {
-      /* */
-    }
-    lastEditor = editor;
-    lastCapture = captureEditorContext(editor, { path, noteBody });
+    // Snapshot prior turns for prompt *before* pushing this user message
+    const historyForPrompt = turns.slice();
+
+    // Capture editor context at send time (user may have moved cursor while bar open)
+    refreshContextFromEditor();
     lastMode = 'show_only';
     lastFbId = null;
     lastVote = null;
-    paintContext(lastCapture);
     showFeedbackRow(false);
 
     if (
@@ -702,11 +1075,19 @@ export function createCommandBarController(app, plugin, deps) {
       return;
     }
 
+    // Commit user turn to transcript + clear input so follow-ups are natural
+    turns.push({ role: 'user', text });
+    paintTranscript();
+    if (inputEl) {
+      inputEl.value = '';
+    }
+
     const promptText = buildCommandBarPrompt({
       userText: text,
-      capture: lastCapture,
+      capture: lastCapture || captureEditorContext(null, {}),
       injectSoul: !!plugin.settings.commandBarInjectSoul,
       soulBlock: '',
+      history: historyForPrompt,
     });
 
     setBusy(true, { phase: 'thinking' });
@@ -777,20 +1158,38 @@ export function createCommandBarController(app, plugin, deps) {
 
     setBusy(false);
 
+    // After reply, refocus input for multi-turn
+    requestAnimationFrame(() => {
+      try {
+        inputEl?.focus();
+      } catch {
+        /* */
+      }
+    });
+
     if (!result.ok) {
-      showResult(result.error || '失败');
-      showFallbackActions(!!lastFullText);
-      showFeedbackRow(!!String(lastFullText).trim());
+      const errText = result.error || '失败';
+      lastFullText = errText;
+      turns.push({ role: 'assistant', text: errText });
+      paintTranscript();
+      showResult(errText);
+      showFallbackActions(false);
+      showFeedbackRow(false);
       return;
     }
 
     if (result.stopReason === 'cancelled') {
-      showResult(
-        (stripApplyHeaderForPreview(lastFullText) || lastFullText || '') +
-          '\n（已停止）'
-      );
-      showFallbackActions(!!String(lastFullText).trim());
-      showFeedbackRow(!!String(lastFullText).trim());
+      const base =
+        stripApplyHeaderForPreview(lastFullText) || lastFullText || '';
+      const cancelledBody = String(base).trim()
+        ? `${base}\n（已停止）`
+        : '（已停止）';
+      lastFullText = cancelledBody;
+      turns.push({ role: 'assistant', text: cancelledBody });
+      paintTranscript();
+      showResult(cancelledBody);
+      showFallbackActions(!!String(base).trim());
+      showFeedbackRow(!!String(base).trim());
       return;
     }
 
@@ -813,6 +1212,9 @@ export function createCommandBarController(app, plugin, deps) {
       ]
         .filter(Boolean)
         .join('\n');
+      lastFullText = hint;
+      turns.push({ role: 'assistant', text: hint });
+      paintTranscript();
       showResult(hint);
       showFallbackActions(false);
       showFeedbackRow(false);
@@ -821,6 +1223,8 @@ export function createCommandBarController(app, plugin, deps) {
     }
 
     lastFullText = body;
+    turns.push({ role: 'assistant', text: body });
+    paintTranscript();
     showResult(body);
     showFeedbackRow(true);
 
@@ -828,6 +1232,9 @@ export function createCommandBarController(app, plugin, deps) {
       showFallbackActions(true);
       return;
     }
+
+    // Re-capture right before auto-apply in case cursor moved during generation
+    refreshContextFromEditor();
 
     if (!lastEditor) {
       showFallbackActions(true);
@@ -840,7 +1247,7 @@ export function createCommandBarController(app, plugin, deps) {
       notify(
         parsed.mode === 'replace_selection'
           ? '已替换选区（Cmd/Ctrl+Z 可撤销）'
-          : '已插入（Cmd/Ctrl+Z 可撤销）'
+          : `已插入 L${(lastCapture?.cursor?.line ?? 0) + 1}:${(lastCapture?.cursor?.ch ?? 0) + 1}（Cmd/Ctrl+Z 可撤销）`
       );
       showResult(cleanModelOutput(body, parsed.mode));
       showFallbackActions(true);
@@ -852,11 +1259,17 @@ export function createCommandBarController(app, plugin, deps) {
 
   function destroy() {
     close();
+    if (removeDragHandlers) {
+      removeDragHandlers();
+      removeDragHandlers = null;
+    }
     if (root) {
       root.remove();
       root = null;
     }
+    panelEl = null;
     inputEl = null;
+    transcriptEl = null;
     resultEl = null;
     thinkingEl = null;
     actionsEl = null;

@@ -16,6 +16,7 @@
  *   capture: EditorCapture,
  *   injectSoul?: boolean,
  *   soulBlock?: string,
+ *   history?: Array<{ role: 'user' | 'assistant', text: string }>,
  * }} opts
  * @returns {string}
  */
@@ -36,6 +37,7 @@ export function buildCommandBarPrompt(opts) {
   parts.push('');
   parts.push('你和在 Grok Build 里一样，用**自然语言完整理解**用户在说什么。');
   parts.push('插件**不会**用关键词猜测意图；由你判断该改笔记还是只回答。');
+  parts.push('这是可多轮的命令条会话：可参考「本会话此前对话」，以最新「用户说」为准。');
   parts.push('');
   parts.push('## 硬性约束');
   parts.push(
@@ -85,7 +87,11 @@ export function buildCommandBarPrompt(opts) {
   }
 
   if (cap.path) {
-    parts.push(`## 当前笔记\n路径：\`${cap.path}\``);
+    const line = (cap.cursor?.line ?? 0) + 1;
+    const ch = (cap.cursor?.ch ?? 0) + 1;
+    parts.push(
+      `## 当前笔记\n路径：\`${cap.path}\`\n光标：第 ${line} 行，第 ${ch} 列（1-based）`
+    );
   }
 
   if (cap.hasSelection && cap.selection) {
@@ -120,6 +126,22 @@ export function buildCommandBarPrompt(opts) {
     parts.push('```');
     parts.push(capped);
     parts.push('```');
+  }
+
+  const history = Array.isArray(opts.history) ? opts.history : [];
+  if (history.length) {
+    // Keep prompt bounded: last 6 turns (≈ 3 user/assistant pairs)
+    const recent = history.slice(-6);
+    parts.push('## 本会话此前对话（可参考；以最新「用户说」为准）');
+    for (const turn of recent) {
+      const role = turn?.role === 'assistant' ? '助手' : '用户';
+      const text = String(turn?.text || '').trim();
+      if (!text) continue;
+      const clipped = text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+      parts.push(`### ${role}`);
+      parts.push(clipped);
+    }
+    parts.push('');
   }
 
   parts.push('## 用户说');

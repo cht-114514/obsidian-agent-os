@@ -10,6 +10,9 @@ import {
   MarkdownRenderer,
   Platform,
   MarkdownView,
+  loadMathJax,
+  renderMath,
+  finishRenderMath,
 } from 'obsidian';
 import { MeSoulController } from './main.js';
 import { mountMeSoulChat } from './chat-panel.js';
@@ -57,6 +60,9 @@ class MeSoulView extends ItemView {
       plugin: this.plugin,
       Notice,
       MarkdownRenderer,
+      loadMathJax,
+      renderMath,
+      finishRenderMath,
       mode: 'fullscreen',
     });
   }
@@ -88,6 +94,9 @@ class MeSoulHomeHost {
       plugin: this.plugin,
       Notice,
       MarkdownRenderer,
+      loadMathJax,
+      renderMath,
+      finishRenderMath,
       mode: 'home',
     });
   }

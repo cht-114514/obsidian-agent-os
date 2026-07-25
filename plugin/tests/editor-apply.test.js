@@ -156,6 +156,30 @@ describe('buildCommandBarPrompt — NL native', () => {
     assert.match(prompt, /很长的一段话/);
     assert.match(prompt, /replace/);
   });
+
+  it('includes multi-turn history and cursor line', () => {
+    const prompt = buildCommandBarPrompt({
+      userText: '再短一点',
+      capture: {
+        path: '手记/x.md',
+        selection: '',
+        hasSelection: false,
+        cursor: { line: 11, ch: 3 },
+        vicinityBefore: '',
+        vicinityAfter: '',
+        noteExcerpt: '',
+      },
+      history: [
+        { role: 'user', text: '写一段总结' },
+        { role: 'assistant', text: '这是第一版总结。' },
+      ],
+    });
+    assert.match(prompt, /本会话此前对话/);
+    assert.match(prompt, /写一段总结/);
+    assert.match(prompt, /这是第一版总结/);
+    assert.match(prompt, /再短一点/);
+    assert.match(prompt, /第 12 行/);
+  });
 });
 
 describe('end-to-end parse → apply', () => {

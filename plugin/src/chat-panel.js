@@ -12,6 +12,7 @@
  *   → agent-inbox/soul/feedback/<date>.md；写反馈触发 me-reflect-feedback
  */
 import { renderAgentMessage } from './renderer.js';
+import { renderMarkdownWithMath } from './markdown-render.js';
 import { setWikiStatus } from './digest.js';
 import { buildTurnPrompt, loadSoulPack } from './memory/inject.js';
 import { shouldSkipRetrieve } from './memory/retrieve.js';
@@ -65,11 +66,24 @@ import {
  *   plugin: any,
  *   Notice: any,
  *   MarkdownRenderer?: any,
+ *   loadMathJax?: () => Promise<void>,
+ *   renderMath?: (source: string, display: boolean) => HTMLElement,
+ *   finishRenderMath?: () => Promise<void>,
  *   mode?: 'home' | 'sidebar' | 'fullscreen',
  * }} ctx
  */
 export function mountMeSoulChat(containerEl, ctx) {
-  const { app, controller, plugin, Notice, MarkdownRenderer, mode = 'home' } = ctx;
+  const {
+    app,
+    controller,
+    plugin,
+    Notice,
+    MarkdownRenderer,
+    loadMathJax,
+    renderMath,
+    finishRenderMath,
+    mode = 'home',
+  } = ctx;
   containerEl.empty();
   containerEl.addClass('me-soul-panel');
   // fullscreen = main-tab ChatGPT-style; home = embedded note; sidebar = legacy narrow
@@ -949,6 +963,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     } else if (m.text && /:::(?:confirm|thought)\b/.test(m.text)) {
       const rendered = renderAgentMessage(m.text, { quiet: controller.settings.quiet });
       body.innerHTML = rendered.html;
+      await hydrateMarkdownBlocks(body);
       await wireConfirms(app, controller, body, Notice, plugin);
     } else if (m.text) {
       const el = body.createDiv({ cls: 'me-soul-stream-text' });
@@ -995,14 +1010,41 @@ export function mountMeSoulChat(containerEl, ctx) {
   }
 
   async function renderMarkdownInto(el, markdown) {
-    el.empty();
-    if (MarkdownRenderer?.render) {
-      try {
-        await MarkdownRenderer.render(app, markdown, el, '', plugin);
-        return;
-      } catch {}
+    el.removeClass('is-streaming-plain');
+    el.addClass('is-md');
+    try {
+      await renderMarkdownWithMath({
+        app,
+        MarkdownRenderer,
+        component: plugin,
+        el,
+        markdown,
+        sourcePath:
+          app.workspace.getActiveFile?.()?.path || 'agent-inbox/sessions/current.md',
+        loadMathJax,
+        finishRenderMath,
+        renderMath,
+      });
+    } catch {
+      el.empty();
+      el.setText(String(markdown ?? ''));
+      el.addClass('is-streaming-plain');
+      el.removeClass('is-md');
     }
-    el.setText(markdown);
+  }
+
+  /**
+   * After fence HTML is injected, turn .me-soul-needs-md text blocks into MD+LaTeX.
+   * @param {HTMLElement} root
+   */
+  async function hydrateMarkdownBlocks(root) {
+    if (!root) return;
+    const nodes = Array.from(root.querySelectorAll('.me-soul-needs-md'));
+    for (const el of nodes) {
+      const md = el.textContent || '';
+      el.removeClass('me-soul-needs-md');
+      await renderMarkdownInto(el, md);
+    }
   }
 
   /** Streaming agent message builder. */
@@ -1016,16 +1058,21 @@ export function mountMeSoulChat(containerEl, ctx) {
     let textBuf = '';
     const toolEls = new Map(); // toolCallId → { root, statusEl }
 
-    function endText() {
+    async function endText() {
       if (textEl && textBuf.trim()) {
         const el = textEl;
         const md = textBuf;
-        renderMarkdownInto(el, md);
+        textEl = null;
+        textBuf = '';
+        await renderMarkdownInto(el, md);
       } else if (textEl && !textBuf.trim()) {
         textEl.remove();
+        textEl = null;
+        textBuf = '';
+      } else {
+        textEl = null;
+        textBuf = '';
       }
-      textEl = null;
-      textBuf = '';
     }
     function endThought() {
       thoughtEl = null;
@@ -1036,7 +1083,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       root: div,
       thought(t) {
         if (!t) return;
-        endText();
+        void endText();
         if (!thoughtEl) {
           const d = body.createEl('details', { cls: 'me-soul-thought' });
           if (!controller.settings.quiet) d.setAttr('open', '');
@@ -1052,7 +1099,9 @@ export function mountMeSoulChat(containerEl, ctx) {
         if (!t) return;
         endThought();
         if (!textEl) {
-          textEl = body.createDiv({ cls: 'me-soul-stream-text' });
+          textEl = body.createDiv({
+            cls: 'me-soul-stream-text is-streaming-plain',
+          });
           textBuf = '';
         }
         textBuf += t;
@@ -1061,7 +1110,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       },
       toolCall(u) {
         endThought();
-        endText();
+        void endText();
         const root = body.createDiv({ cls: 'me-soul-tool-row' });
         root.createSpan({ cls: 'me-soul-tool-icon', text: toolIcon(u.kind) });
         root.createSpan({ cls: 'me-soul-tool-title', text: u.title || u.kind || 'tool' });
@@ -1088,7 +1137,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       /** Inline permission card; resolves optionId. */
       permission({ toolCall, options }) {
         endThought();
-        endText();
+        void endText();
         return new Promise((resolve, reject) => {
           const card = body.createDiv({ cls: 'me-soul-confirm' });
           card.createDiv({ cls: 'me-soul-confirm-title', text: '需要你的许可' });
@@ -1112,9 +1161,15 @@ export function mountMeSoulChat(containerEl, ctx) {
           scrollDown();
         });
       },
-      finalize(fullText) {
+      async finalize(fullText) {
         endThought();
-        endText();
+        // Skill path may have emptied/rebuilt body; only MD-render if stream node still mounted
+        if (textEl && textEl.isConnected) {
+          await endText();
+        } else {
+          textEl = null;
+          textBuf = '';
+        }
         appendFooter(div, fullText);
         scrollDown();
         recordMessage({
@@ -1122,9 +1177,9 @@ export function mountMeSoulChat(containerEl, ctx) {
           text: fullText || '',
         });
       },
-      fail(err) {
+      async fail(err) {
         endThought();
-        endText();
+        await endText();
         const msg = err?.message || String(err || 'unknown');
         body.createDiv({ cls: 'me-soul-error', text: `出错了：${msg}` });
         scrollDown();
@@ -1416,7 +1471,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       const body = msg.root.querySelector('.me-soul-msg-body');
       body.innerHTML = res.html;
       wireConfirms(app, controller, body, Notice, plugin);
-      msg.finalize(res.agentText || '');
+      await msg.finalize(res.agentText || '');
       return;
     }
 
@@ -1439,7 +1494,7 @@ export function mountMeSoulChat(containerEl, ctx) {
         text: '（已停止）',
       });
     }
-    msg.finalize(full);
+    await msg.finalize(full);
   }
 
   /**
@@ -1513,9 +1568,10 @@ export function mountMeSoulChat(containerEl, ctx) {
         quiet: controller.settings.quiet,
       });
       bodyEl.innerHTML = rendered.html;
+      await hydrateMarkdownBlocks(bodyEl);
       await wireConfirms(app, controller, bodyEl, Notice, plugin);
     }
-    msg.finalize(full);
+    await msg.finalize(full);
   }
 
   // ---------- paste / drop → raw ----------
