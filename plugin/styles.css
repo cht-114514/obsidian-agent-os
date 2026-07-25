@@ -1901,6 +1901,11 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   background-color: rgba(255, 255, 255, 0.85) !important;
 }
 
+.me-soul-effort-select {
+  min-width: 5rem;
+  max-width: min(8rem, 28vw);
+}
+
 .me-soul-panel-sidebar .me-soul-model-select--header {
   min-width: 5.5rem;
   max-width: min(9rem, 40vw);
@@ -2728,6 +2733,11 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   background-size: 4px 4px, 4px 4px;
   background-repeat: no-repeat;
   outline: none;
+}
+
+.me-soul-cmdbar-effort {
+  min-width: 5.5rem;
+  max-width: min(8.5rem, 32vw);
 }
 
 .me-soul-cmdbar-model:hover,

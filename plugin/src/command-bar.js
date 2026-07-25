@@ -13,7 +13,11 @@ import {
 import { buildCommandBarPrompt, runAgentTurn } from './agent-turn.js';
 import {
   formatGrokRuntimeLabel,
+  formatProfileOptionLabel,
+  formatReasoningEffortLabel,
   normalizeGrokProfiles,
+  normalizeReasoningEffort,
+  REASONING_EFFORT_LEVELS,
   resolveGrokRuntime,
 } from './grok-runtime.js';
 import {
@@ -54,6 +58,8 @@ export function createCommandBarController(app, plugin, deps) {
   let sendBtn = null;
   /** @type {HTMLSelectElement | null} */
   let modelSelect = null;
+  /** @type {HTMLSelectElement | null} */
+  let effortSelect = null;
 
   let busy = false;
   /** @type {import('./editor-apply.js').EditorCapture | null} */
@@ -251,10 +257,19 @@ export function createCommandBarController(app, plugin, deps) {
       cls: 'me-soul-cmdbar-model',
       attr: {
         'aria-label': '切换模型',
-        title: '切换 Grok Build 模型 / 第三方 API',
+        title: '切换 Grok订阅 / 第三方模型',
       },
     });
     modelSelect.onchange = () => onModelChange();
+
+    effortSelect = head.createEl('select', {
+      cls: 'me-soul-cmdbar-model me-soul-cmdbar-effort',
+      attr: {
+        'aria-label': '思考等级',
+        title: '思考等级（reasoning effort）',
+      },
+    });
+    effortSelect.onchange = () => onEffortChange();
 
     statusEl = head.createSpan({ cls: 'me-soul-cmdbar-status', text: '' });
 
@@ -505,6 +520,7 @@ export function createCommandBarController(app, plugin, deps) {
     });
 
     refreshModelSelect();
+    refreshEffortSelect();
     placePanel();
   }
 
@@ -516,7 +532,7 @@ export function createCommandBarController(app, plugin, deps) {
     modelSelect.empty();
     for (const p of profiles) {
       const opt = modelSelect.createEl('option', {
-        text: p.label || p.model || p.id,
+        text: formatProfileOptionLabel(p),
         attr: { value: p.id },
       });
       if (p.id === active) opt.selected = true;
@@ -527,6 +543,28 @@ export function createCommandBarController(app, plugin, deps) {
     } catch {
       /* */
     }
+  }
+
+  function refreshEffortSelect() {
+    if (!effortSelect) return;
+    const active = normalizeReasoningEffort(plugin.settings.grokReasoningEffort);
+    effortSelect.empty();
+    const def = effortSelect.createEl('option', {
+      text: '思考·默认',
+      attr: { value: '' },
+    });
+    if (!active) def.selected = true;
+    for (const level of REASONING_EFFORT_LEVELS) {
+      const opt = effortSelect.createEl('option', {
+        text: `思考·${formatReasoningEffortLabel(level)}`,
+        attr: { value: level },
+      });
+      if (level === active) opt.selected = true;
+    }
+    effortSelect.setAttr(
+      'title',
+      `思考等级：${formatReasoningEffortLabel(active)}${active ? `（${active}）` : ''}`
+    );
   }
 
   async function onModelChange() {
@@ -551,10 +589,45 @@ export function createCommandBarController(app, plugin, deps) {
         /* */
       }
       refreshModelSelect();
+      refreshEffortSelect();
       notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条生效）`);
     } catch (e) {
       notify(e?.message || String(e));
       refreshModelSelect();
+    }
+  }
+
+  async function onEffortChange() {
+    if (!effortSelect) return;
+    const next = normalizeReasoningEffort(effortSelect.value);
+    const cur = normalizeReasoningEffort(plugin.settings.grokReasoningEffort);
+    if (next === cur) return;
+    if (busy) {
+      notify('请等当前回复结束后再切换思考等级');
+      refreshEffortSelect();
+      return;
+    }
+    try {
+      const rt = plugin.setGrokReasoningEffort
+        ? await plugin.setGrokReasoningEffort(next)
+        : (() => {
+            plugin.settings.grokReasoningEffort = next;
+            return resolveGrokRuntime(plugin.settings);
+          })();
+      try {
+        plugin.acp?.resetSession?.();
+      } catch {
+        /* */
+      }
+      refreshEffortSelect();
+      notify(
+        `思考等级 → ${formatReasoningEffortLabel(rt.reasoningEffort)}${
+          rt.reasoningEffort ? `（${rt.reasoningEffort}）` : ''
+        }（下一条生效）`
+      );
+    } catch (e) {
+      notify(e?.message || String(e));
+      refreshEffortSelect();
     }
   }
 
@@ -612,6 +685,7 @@ export function createCommandBarController(app, plugin, deps) {
     if (inputEl) inputEl.toggleClass('is-busy', b);
     if (root) root.toggleClass('is-busy', b);
     if (modelSelect) modelSelect.disabled = !!b;
+    if (effortSelect) effortSelect.disabled = !!b;
 
     if (!b) {
       hideThinking();
@@ -1277,6 +1351,7 @@ export function createCommandBarController(app, plugin, deps) {
     statusEl = null;
     sendBtn = null;
     modelSelect = null;
+    effortSelect = null;
   }
 
   return {
