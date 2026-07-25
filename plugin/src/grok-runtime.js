@@ -1,7 +1,7 @@
 /**
  * Grok Build runtime: model profiles + third-party OpenAI-compatible endpoints.
  *
- * Official SuperGrok uses the user's real ~/.grok (login / XAI_API_KEY).
+ * Official Grok subscription uses the user's real ~/.grok (login / XAI_API_KEY).
  * Third-party profiles use an isolated GROK_HOME with a generated config.toml
  * so inference hits the gateway with the profile's api_key — env-only overrides
  * cause 401 + silent SuperGrok re-auth loops.
@@ -24,6 +24,7 @@
  *   apiKey: string,
  *   binPath: string,
  *   isThirdParty: boolean,
+ *   reasoningEffort: string,
  * }} GrokRuntime
  *
  * @typedef {{
@@ -35,22 +36,141 @@
  *   configToml: string | null,
  *   isThirdParty: boolean,
  *   label: string,
+ *   reasoningEffort: string,
  * }} GrokSpawnPlan
  */
 
 /** Config section name for plugin-managed third-party model. */
 export const THIRD_PARTY_MODEL_ALIAS = 'obsidian_tp';
 
-/** Built-in profile: official SuperGrok / xAI (uses grok login or XAI_API_KEY). */
+/** Display name for the built-in official / subscription profile. */
+export const SUPERGROK_LABEL = 'Grok订阅';
+
+/**
+ * Reasoning effort levels accepted by `grok agent --reasoning-effort`
+ * (none | minimal | low | medium | high | xhigh). Empty = omit flag (model default).
+ * @type {readonly string[]}
+ */
+export const REASONING_EFFORT_LEVELS = Object.freeze([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]);
+
+/** Chinese labels for the thinking-level picker. */
+export const REASONING_EFFORT_LABELS = Object.freeze({
+  '': '默认',
+  none: '关闭',
+  minimal: '极低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+});
+
+/** Built-in profile: Grok subscription / xAI (uses grok login or XAI_API_KEY). */
 export const DEFAULT_GROK_PROFILES = [
   {
     id: 'supergrok',
-    label: 'SuperGrok (官方)',
+    label: SUPERGROK_LABEL,
     model: 'grok-build',
     baseUrl: '',
     apiKey: '',
   },
 ];
+
+/** Legacy / generic labels we rewrite to a clearer display name. */
+const LEGACY_SUPERGROK_LABELS = new Set([
+  'supergrok',
+  'SuperGrok',
+  'SuperGrok (官方)',
+  '官方',
+  '官方 SuperGrok',
+]);
+
+const GENERIC_THIRD_PARTY_LABELS = new Set([
+  '第三方模型',
+  '第三方',
+  'third-party',
+  'Third-party',
+  'Third Party',
+  'third party',
+]);
+
+/**
+ * @param {string} label
+ */
+export function isGenericThirdPartyLabel(label) {
+  return GENERIC_THIRD_PARTY_LABELS.has(String(label || '').trim());
+}
+
+/**
+ * Pretty-print a model id for UI: `gpt-5.6-luna` → `GPT-5.6 Luna`.
+ * @param {string} model
+ */
+export function formatModelDisplayName(model) {
+  const m = String(model || '').trim();
+  if (!m) return '';
+  const parts = m.split(/[-_]+/).filter(Boolean);
+  /** @type {string[]} */
+  const out = [];
+  for (const tok of parts) {
+    // Dotted versions attach to the prior brand token: gpt + 5.6 → GPT-5.6
+    if (/^\d+\.\d+/.test(tok) && out.length) {
+      out[out.length - 1] = `${out[out.length - 1]}-${tok}`;
+      continue;
+    }
+    if (/^(gpt|o\d*|claude|gemini|grok|qwen|deepseek|llama|mistral|glm|kimi)$/i.test(tok)) {
+      out.push(tok.length <= 4 ? tok.toUpperCase() : tok[0].toUpperCase() + tok.slice(1));
+      continue;
+    }
+    out.push(tok.charAt(0).toUpperCase() + tok.slice(1));
+  }
+  return out.join(' ');
+}
+
+/**
+ * Option / chip label for a profile in model switchers.
+ * @param {GrokProfile} profile
+ */
+export function formatProfileOptionLabel(profile) {
+  if (!profile) return '';
+  if (profile.id === 'supergrok') {
+    const label = String(profile.label || '').trim();
+    if (!label || LEGACY_SUPERGROK_LABELS.has(label)) return SUPERGROK_LABEL;
+    return label;
+  }
+  const label = String(profile.label || '').trim();
+  if (!label || GENERIC_THIRD_PARTY_LABELS.has(label)) {
+    return formatModelDisplayName(profile.model) || profile.model || profile.id;
+  }
+  return label;
+}
+
+/**
+ * Normalize / validate reasoning effort from settings.
+ * @param {unknown} raw
+ * @returns {string} empty string or a REASONING_EFFORT_LEVELS value
+ */
+export function normalizeReasoningEffort(raw) {
+  const v = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (!v || v === 'default' || v === 'auto') return '';
+  return REASONING_EFFORT_LEVELS.includes(v) ? v : '';
+}
+
+/**
+ * Human label for a thinking level value.
+ * @param {string} effort
+ */
+export function formatReasoningEffortLabel(effort) {
+  const e = normalizeReasoningEffort(effort);
+  return REASONING_EFFORT_LABELS[e] || REASONING_EFFORT_LABELS[''] || '默认';
+}
 
 /**
  * @param {any} raw
@@ -66,10 +186,17 @@ export function normalizeGrokProfiles(raw) {
     const id = String(p.id || '').trim() || `p_${out.length + 1}`;
     if (seen.has(id)) continue;
     seen.add(id);
+    const model = String(p.model || '').trim() || 'grok-build';
+    let label = String(p.label || '').trim();
+    if (id === 'supergrok') {
+      if (!label || LEGACY_SUPERGROK_LABELS.has(label)) label = SUPERGROK_LABEL;
+    } else if (!label || GENERIC_THIRD_PARTY_LABELS.has(label)) {
+      label = formatModelDisplayName(model) || model || id;
+    }
     out.push({
       id,
-      label: String(p.label || p.model || id).trim() || id,
-      model: String(p.model || '').trim() || 'grok-build',
+      label: label || id,
+      model,
       baseUrl: p.baseUrl != null ? normalizeOpenAiBaseUrl(String(p.baseUrl).trim()) : '',
       apiKey: p.apiKey != null ? String(p.apiKey) : '',
     });
@@ -136,15 +263,17 @@ export function resolveGrokRuntime(settings) {
     : normalizeOpenAiBaseUrl(profileBase || globalBase);
   const apiKey = isOfficial ? profileKey : profileKey || globalKey;
   const isThirdParty = !isOfficial && !!baseUrl;
+  const reasoningEffort = normalizeReasoningEffort(s.grokReasoningEffort);
 
   return {
     profileId: profile?.id || '',
-    label: profile?.label || model,
+    label: formatProfileOptionLabel(profile) || model,
     model,
     baseUrl,
     apiKey,
     binPath: String(s.grokBin || '~/.grok/bin/grok').trim() || '~/.grok/bin/grok',
     isThirdParty,
+    reasoningEffort,
   };
 }
 
@@ -159,6 +288,7 @@ export function grokRuntimeSignature(rt) {
     rt.isThirdParty ? 'tp:1' : 'tp:0',
     rt.apiKey ? 'key:1' : 'key:0',
     rt.apiKey ? simpleHash(rt.apiKey) : '',
+    rt.reasoningEffort ? `eff:${rt.reasoningEffort}` : 'eff:',
   ].join('|');
 }
 
@@ -191,7 +321,7 @@ export function buildThirdPartyConfigToml(opts) {
   const model = opts.model || 'gpt-4o-mini';
   const baseUrl = normalizeOpenAiBaseUrl(opts.baseUrl || '');
   const apiKey = opts.apiKey || '';
-  const name = opts.label || model;
+  const name = opts.label || formatModelDisplayName(model) || model;
   // stream_tool_calls=false: many OpenAI-compatible gateways (e.g. dmxapi) reject
   // partial/empty tool_calls[].function.name during streaming tool assembly
   // (400: Invalid 'messages[n].tool_calls[0].function.name': empty string).
@@ -214,12 +344,33 @@ export function buildThirdPartyConfigToml(opts) {
 }
 
 /**
+ * Build `grok agent … stdio` argv, optionally with `--reasoning-effort`.
+ * Effort must precede the `stdio` subcommand.
+ * @param {{ model?: string, reasoningEffort?: string, useThirdPartyAlias?: boolean }} opts
+ */
+export function buildGrokStdioArgs(opts = {}) {
+  /** @type {string[]} */
+  const args = ['agent'];
+  const effort = normalizeReasoningEffort(opts.reasoningEffort);
+  if (effort) args.push('--reasoning-effort', effort);
+  if (opts.useThirdPartyAlias) {
+    args.push('-m', THIRD_PARTY_MODEL_ALIAS);
+  } else if (opts.model) {
+    args.push('-m', opts.model);
+  }
+  args.push('stdio');
+  return args;
+}
+
+/**
  * Full spawn plan for ACP client.
  * @param {GrokRuntime} rt
  * @param {{ grokHomeDir?: string | null }} [opts]
  * @returns {GrokSpawnPlan}
  */
 export function buildGrokSpawnPlan(rt, opts = {}) {
+  const reasoningEffort = normalizeReasoningEffort(rt.reasoningEffort);
+
   if (rt.isThirdParty && rt.baseUrl) {
     if (!rt.apiKey) {
       // still produce plan; caller should fail early with clear message
@@ -232,7 +383,10 @@ export function buildGrokSpawnPlan(rt, opts = {}) {
     });
     return {
       model: THIRD_PARTY_MODEL_ALIAS,
-      args: ['agent', '-m', THIRD_PARTY_MODEL_ALIAS, 'stdio'],
+      args: buildGrokStdioArgs({
+        useThirdPartyAlias: true,
+        reasoningEffort,
+      }),
       envPatch: {
         GROK_HOME: opts.grokHomeDir || '',
       },
@@ -247,13 +401,11 @@ export function buildGrokSpawnPlan(rt, opts = {}) {
       configToml,
       isThirdParty: true,
       label: rt.label || rt.model,
+      reasoningEffort,
     };
   }
 
-  // Official SuperGrok / default
-  const args = ['agent'];
-  if (rt.model) args.push('-m', rt.model);
-  args.push('stdio');
+  // Official Grok subscription / default
   /** @type {Record<string, string>} */
   const envPatch = {};
   if (rt.apiKey) {
@@ -262,31 +414,42 @@ export function buildGrokSpawnPlan(rt, opts = {}) {
   }
   return {
     model: rt.model || '',
-    args,
+    args: buildGrokStdioArgs({
+      model: rt.model || '',
+      reasoningEffort,
+    }),
     envPatch,
     clearEnvKeys: [],
     grokHome: null,
     configToml: null,
     isThirdParty: false,
-    label: rt.label || rt.model || 'SuperGrok',
+    label: rt.label || rt.model || SUPERGROK_LABEL,
+    reasoningEffort,
   };
 }
 
 /**
- * @param {{ model?: string, baseUrl?: string, isThirdParty?: boolean }} opts
+ * @param {{ model?: string, baseUrl?: string, isThirdParty?: boolean, reasoningEffort?: string }} opts
  * @deprecated prefer buildGrokSpawnPlan
  */
 export function buildGrokAgentArgs(opts = {}) {
   if (opts.isThirdParty && opts.baseUrl) {
-    return ['agent', '-m', THIRD_PARTY_MODEL_ALIAS, 'stdio'];
+    return buildGrokStdioArgs({
+      useThirdPartyAlias: true,
+      reasoningEffort: opts.reasoningEffort,
+    });
   }
-  const args = ['agent'];
-  if (opts.model) args.push('-m', opts.model);
+  const args = buildGrokStdioArgs({
+    model: opts.model || '',
+    reasoningEffort: opts.reasoningEffort,
+  });
   if (opts.baseUrl) {
+    // insert base-url flags before trailing `stdio`
+    const stdio = args.pop();
     args.push('--xai-api-base-url', opts.baseUrl);
     args.push('--cli-chat-proxy-base-url', opts.baseUrl);
+    args.push(stdio || 'stdio');
   }
-  args.push('stdio');
   return args;
 }
 
@@ -344,6 +507,9 @@ export function applySpawnPlanEnv(baseEnv, plan) {
  */
 export function formatGrokRuntimeLabel(rt) {
   const model = rt.model || 'default';
+  const name = rt.label || formatModelDisplayName(model) || model;
+  const effort = normalizeReasoningEffort(rt.reasoningEffort);
+  const effortSuffix = effort ? ` · 思考${formatReasoningEffortLabel(effort)}` : '';
   if (rt.baseUrl) {
     let host = rt.baseUrl;
     try {
@@ -351,9 +517,9 @@ export function formatGrokRuntimeLabel(rt) {
     } catch {
       /* keep */
     }
-    return `${rt.label || model} · ${host}`;
+    return `${name} · ${host}${effortSuffix}`;
   }
-  return rt.label || model;
+  return `${name}${effortSuffix}`;
 }
 
 /**

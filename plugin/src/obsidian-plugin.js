@@ -23,9 +23,16 @@ import { createCommandBarController } from './command-bar.js';
 import {
   DEFAULT_GROK_PROFILES,
   formatGrokRuntimeLabel,
+  formatModelDisplayName,
+  formatProfileOptionLabel,
+  formatReasoningEffortLabel,
   grokRuntimeSignature,
+  isGenericThirdPartyLabel,
   normalizeGrokProfiles,
+  normalizeReasoningEffort,
+  REASONING_EFFORT_LEVELS,
   resolveGrokRuntime,
+  SUPERGROK_LABEL,
 } from './grok-runtime.js';
 
 export const VIEW_TYPE = 'me-soul-chat';
@@ -346,6 +353,17 @@ export default class MeSoulPlugin extends Plugin {
     return this.getGrokRuntime();
   }
 
+  /**
+   * Set Grok reasoning / thinking level (`--reasoning-effort`). Restarts ACP on next prompt.
+   * @param {string} effort empty = model default; else none|minimal|low|medium|high|xhigh
+   */
+  async setGrokReasoningEffort(effort) {
+    this.settings.grokReasoningEffort = normalizeReasoningEffort(effort);
+    await this.saveSettings();
+    this.invalidateAcp();
+    return this.getGrokRuntime();
+  }
+
   /** Drop running Grok ACP so next getAcp() rebuilds with current settings. */
   invalidateAcp() {
     try {
@@ -390,6 +408,7 @@ export default class MeSoulPlugin extends Plugin {
       isThirdParty: rt.isThirdParty,
       label: rt.label,
       profileId: rt.profileId,
+      reasoningEffort: rt.reasoningEffort,
       autoApprove: makeVaultAutoApprove(
         (rel) => checkWritePolicy(rel).allowed,
         base
@@ -458,11 +477,13 @@ export default class MeSoulPlugin extends Plugin {
         grokModel: 'grok-build',
         /** Optional default third-party OpenAI-compatible base (profile can override). */
         grokApiBaseUrl: '',
-        /** Optional API key for third-party / override SuperGrok session auth for this plugin only. */
+        /** Optional API key for third-party / override Grok subscription session auth for this plugin only. */
         grokApiKey: '',
         /** Named profiles for sidebar quick-switch. */
         grokProfiles: DEFAULT_GROK_PROFILES.map((p) => ({ ...p })),
         grokActiveProfile: 'supergrok',
+        /** Reasoning effort for `grok agent --reasoning-effort` (empty = model default). */
+        grokReasoningEffort: '',
         gatewayUrl: 'http://127.0.0.1:18789',
         token: '',
         quiet: false,
@@ -530,6 +551,9 @@ export default class MeSoulPlugin extends Plugin {
     if (!this.settings.grokActiveProfile) {
       this.settings.grokActiveProfile = 'supergrok';
     }
+    this.settings.grokReasoningEffort = normalizeReasoningEffort(
+      this.settings.grokReasoningEffort
+    );
   }
 
   async saveSettings() {
@@ -727,7 +751,7 @@ class MeSoulSettingTab extends PluginSettingTab {
     {
       const body = this.section(containerEl, {
         title: '对话内核',
-        desc: '选引擎；Grok Build 可接官方 SuperGrok 或 OpenAI 兼容第三方以省额度。',
+        desc: '选引擎；Grok Build 可接 Grok 订阅或 OpenAI 兼容第三方（显示具体模型名）。',
         badge: '3',
       });
 
@@ -770,7 +794,7 @@ class MeSoulSettingTab extends PluginSettingTab {
           .setDesc(formatGrokRuntimeLabel(this.plugin.getGrokRuntime()))
           .addDropdown((d) => {
             for (const p of profiles) {
-              d.addOption(p.id, p.label || p.model || p.id);
+              d.addOption(p.id, formatProfileOptionLabel(p));
             }
             d.setValue(s.grokActiveProfile || profiles[0]?.id || 'supergrok');
             d.onChange(async (v) => {
@@ -784,9 +808,30 @@ class MeSoulSettingTab extends PluginSettingTab {
           });
 
         new Setting(body)
+          .setName('思考等级')
+          .setDesc(
+            '传给 grok --reasoning-effort（none / minimal / low / medium / high / xhigh）。默认不传，由模型自行决定。切换后下一条消息生效。'
+          )
+          .addDropdown((d) => {
+            d.addOption('', '默认（不传）');
+            for (const level of REASONING_EFFORT_LEVELS) {
+              d.addOption(level, `${formatReasoningEffortLabel(level)}（${level}）`);
+            }
+            d.setValue(normalizeReasoningEffort(s.grokReasoningEffort));
+            d.onChange(async (v) => {
+              try {
+                await this.plugin.setGrokReasoningEffort(v);
+                this.display();
+              } catch (e) {
+                new Notice(String(e?.message || e));
+              }
+            });
+          });
+
+        new Setting(body)
           .setName('全局 API Base URL')
           .setDesc(
-            'OpenAI 兼容根地址，须含 /v1（如 https://www.dmxapi.cn/v1）。只写域名会失败。SuperGrok 官方档不继承此项。'
+            'OpenAI 兼容根地址，须含 /v1（如 https://www.dmxapi.cn/v1）。只写域名会失败。Grok订阅档不继承此项。'
           )
           .addText((t) =>
             t
@@ -826,36 +871,60 @@ class MeSoulSettingTab extends PluginSettingTab {
             cls: `me-soul-profile-box${isActive ? ' is-active' : ''}`,
           });
           const boxHead = box.createDiv({ cls: 'me-soul-profile-head' });
-          boxHead.createEl('h4', { text: p.label || p.id });
+          boxHead.createEl('h4', { text: formatProfileOptionLabel(p) });
           if (isActive) {
             boxHead.createSpan({ cls: 'me-soul-settings-badge is-on', text: '使用中' });
           }
           if (p.id === 'supergrok') {
             boxHead.createSpan({
               cls: 'me-soul-settings-badge is-muted',
-              text: '官方',
+              text: '订阅',
             });
           }
 
           new Setting(box)
             .setName('显示名')
+            .setDesc(
+              p.id === 'supergrok'
+                ? `侧栏切换显示名，默认「${SUPERGROK_LABEL}」`
+                : '侧栏切换显示名；留空则用模型 ID 美化名（如 GPT-5.6 Luna）'
+            )
             .addText((t) =>
-              t.setValue(p.label || '').onChange(async (v) => {
-                p.label = v.trim() || p.id;
-                s.grokProfiles = normalizeGrokProfiles(profiles);
-                await this.plugin.saveSettings();
-              })
+              t
+                .setPlaceholder(
+                  p.id === 'supergrok'
+                    ? SUPERGROK_LABEL
+                    : formatModelDisplayName(p.model) || p.model || '显示名'
+                )
+                .setValue(p.label || '')
+                .onChange(async (v) => {
+                  p.label = v.trim();
+                  s.grokProfiles = normalizeGrokProfiles(profiles);
+                  await this.plugin.saveSettings();
+                })
             );
 
           new Setting(box)
             .setName('模型 ID')
-            .setDesc('传给 grok -m；第三方需与网关 /v1/models 一致')
+            .setDesc('传给 grok -m；第三方需与网关 /v1/models 一致（如 gpt-5.6-luna）')
             .addText((t) =>
               t
-                .setPlaceholder('grok-build / gpt-4o-mini …')
+                .setPlaceholder('grok-build / gpt-5.6-luna …')
                 .setValue(p.model || '')
                 .onChange(async (v) => {
-                  p.model = v.trim() || 'grok-build';
+                  const nextModel = v.trim() || 'grok-build';
+                  const prevPretty = formatModelDisplayName(p.model);
+                  // Keep display name in sync when it was auto-derived from the old model id.
+                  if (
+                    p.id !== 'supergrok' &&
+                    (!p.label ||
+                      p.label === p.model ||
+                      p.label === prevPretty ||
+                      isGenericThirdPartyLabel(p.label))
+                  ) {
+                    p.label = formatModelDisplayName(nextModel) || nextModel;
+                  }
+                  p.model = nextModel;
                   if (s.grokActiveProfile === p.id) {
                     s.grokModel = p.model;
                     this.plugin.invalidateAcp();
@@ -869,7 +938,7 @@ class MeSoulSettingTab extends PluginSettingTab {
             .setName('Base URL 覆盖')
             .setDesc(
               p.id === 'supergrok'
-                ? '官方档请留空（用 grok login）'
+                ? 'Grok订阅档请留空（用 grok login）'
                 : '留空则用上方全局 Base URL'
             )
             .addText((t) =>
@@ -887,7 +956,7 @@ class MeSoulSettingTab extends PluginSettingTab {
           new Setting(box)
             .setName('API Key 覆盖')
             .setDesc(
-              p.id === 'supergrok' ? '留空用官方登录 / 环境变量' : '留空则用全局 Key'
+              p.id === 'supergrok' ? '留空用订阅登录 / 环境变量' : '留空则用全局 Key'
             )
             .addText((t) => {
               t.inputEl.type = 'password';
@@ -919,16 +988,17 @@ class MeSoulSettingTab extends PluginSettingTab {
 
         new Setting(fold)
           .setName('添加配置档')
-          .setDesc('第三方便宜模型，侧栏一键切换')
+          .setDesc('添加第三方模型（显示名默认用模型 ID，如 GPT-5.6 Luna）')
           .addButton((b) =>
             b.setButtonText('＋ 添加').onClick(async () => {
               const id = `p_${Date.now().toString(36)}`;
+              const model = 'gpt-5.6-luna';
               const next = [
                 ...normalizeGrokProfiles(s.grokProfiles),
                 {
                   id,
-                  label: '第三方模型',
-                  model: 'gpt-4o-mini',
+                  label: formatModelDisplayName(model),
+                  model,
                   baseUrl: s.grokApiBaseUrl || '',
                   apiKey: '',
                 },

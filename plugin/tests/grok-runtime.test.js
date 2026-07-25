@@ -6,13 +6,19 @@ import {
   buildGrokAgentArgs,
   buildGrokChildEnv,
   buildGrokSpawnPlan,
+  buildGrokStdioArgs,
   buildThirdPartyConfigToml,
   normalizeOpenAiBaseUrl,
   grokRuntimeSignature,
   formatGrokRuntimeLabel,
+  formatModelDisplayName,
+  formatProfileOptionLabel,
+  formatReasoningEffortLabel,
+  normalizeReasoningEffort,
   validateGrokRuntime,
   THIRD_PARTY_MODEL_ALIAS,
   DEFAULT_GROK_PROFILES,
+  SUPERGROK_LABEL,
 } from '../src/grok-runtime.js';
 
 describe('grok-runtime', () => {
@@ -29,13 +35,48 @@ describe('grok-runtime', () => {
     assert.equal(normalizeOpenAiBaseUrl(''), '');
   });
 
-  it('normalizeGrokProfiles always includes supergrok', () => {
+  it('normalizeGrokProfiles always includes supergrok as Grok订阅', () => {
     const p = normalizeGrokProfiles([
       { id: 'cheap', label: 'DMX', model: 'gpt-4o-mini', baseUrl: 'https://x' },
     ]);
     assert.equal(p[0].id, 'supergrok');
+    assert.equal(p[0].label, SUPERGROK_LABEL);
     assert.equal(p.some((x) => x.id === 'cheap'), true);
     assert.equal(p.find((x) => x.id === 'cheap')?.baseUrl, 'https://x/v1');
+  });
+
+  it('normalizeGrokProfiles migrates legacy SuperGrok / 第三方模型 labels', () => {
+    const p = normalizeGrokProfiles([
+      { id: 'supergrok', label: 'SuperGrok (官方)', model: 'grok-build' },
+      { id: 'tp', label: '第三方模型', model: 'gpt-5.6-luna', baseUrl: 'https://x/v1' },
+    ]);
+    assert.equal(p.find((x) => x.id === 'supergrok')?.label, 'Grok订阅');
+    assert.equal(p.find((x) => x.id === 'tp')?.label, 'GPT-5.6 Luna');
+  });
+
+  it('formatModelDisplayName pretty-prints common ids', () => {
+    assert.equal(formatModelDisplayName('gpt-5.6-luna'), 'GPT-5.6 Luna');
+    assert.equal(formatModelDisplayName('claude-sonnet-4'), 'Claude Sonnet 4');
+    assert.equal(formatModelDisplayName(''), '');
+  });
+
+  it('formatProfileOptionLabel prefers concrete names', () => {
+    assert.equal(
+      formatProfileOptionLabel({ id: 'supergrok', label: 'SuperGrok', model: 'grok-build' }),
+      'Grok订阅'
+    );
+    assert.equal(
+      formatProfileOptionLabel({
+        id: 'tp',
+        label: '第三方模型',
+        model: 'gpt-5.6-luna',
+      }),
+      'GPT-5.6 Luna'
+    );
+    assert.equal(
+      formatProfileOptionLabel({ id: 'tp', label: '我的 Luna', model: 'gpt-5.6-luna' }),
+      '我的 Luna'
+    );
   });
 
   it('resolveGrokRuntime uses active profile then global fallbacks', () => {
@@ -59,6 +100,7 @@ describe('grok-runtime', () => {
     assert.equal(rt.apiKey, 'global-key');
     assert.equal(rt.profileId, 'cheap');
     assert.equal(rt.isThirdParty, true);
+    assert.equal(rt.reasoningEffort, '');
   });
 
   it('supergrok ignores global third-party base/key', () => {
@@ -72,6 +114,7 @@ describe('grok-runtime', () => {
     assert.equal(rt.apiKey, '');
     assert.equal(rt.model, 'grok-build');
     assert.equal(rt.isThirdParty, false);
+    assert.equal(rt.label, 'Grok订阅');
   });
 
   it('profile baseUrl/apiKey override globals', () => {
@@ -93,9 +136,34 @@ describe('grok-runtime', () => {
     assert.equal(rt.apiKey, 'pk');
   });
 
+  it('normalizeReasoningEffort accepts CLI levels', () => {
+    assert.equal(normalizeReasoningEffort('high'), 'high');
+    assert.equal(normalizeReasoningEffort('XHIGH'), 'xhigh');
+    assert.equal(normalizeReasoningEffort('default'), '');
+    assert.equal(normalizeReasoningEffort('max'), '');
+    assert.equal(formatReasoningEffortLabel('medium'), '中');
+    assert.equal(formatReasoningEffortLabel(''), '默认');
+  });
+
+  it('buildGrokStdioArgs inserts --reasoning-effort before stdio', () => {
+    assert.deepEqual(buildGrokStdioArgs({ model: 'grok-build', reasoningEffort: 'high' }), [
+      'agent',
+      '--reasoning-effort',
+      'high',
+      '-m',
+      'grok-build',
+      'stdio',
+    ]);
+    assert.deepEqual(
+      buildGrokStdioArgs({ useThirdPartyAlias: true, reasoningEffort: 'low' }),
+      ['agent', '--reasoning-effort', 'low', '-m', THIRD_PARTY_MODEL_ALIAS, 'stdio']
+    );
+  });
+
   it('buildGrokSpawnPlan third-party uses alias and isolated home flags', () => {
     const rt = resolveGrokRuntime({
       grokActiveProfile: 'p',
+      grokReasoningEffort: 'medium',
       grokProfiles: [
         {
           id: 'p',
@@ -108,7 +176,15 @@ describe('grok-runtime', () => {
     });
     const plan = buildGrokSpawnPlan(rt, { grokHomeDir: '/tmp/gh' });
     assert.equal(plan.isThirdParty, true);
-    assert.deepEqual(plan.args, ['agent', '-m', THIRD_PARTY_MODEL_ALIAS, 'stdio']);
+    assert.equal(plan.reasoningEffort, 'medium');
+    assert.deepEqual(plan.args, [
+      'agent',
+      '--reasoning-effort',
+      'medium',
+      '-m',
+      THIRD_PARTY_MODEL_ALIAS,
+      'stdio',
+    ]);
     assert.equal(plan.envPatch.GROK_HOME, '/tmp/gh');
     assert.ok(plan.clearEnvKeys.includes('XAI_API_KEY'));
     assert.match(plan.configToml || '', /gpt-5\.6-luna/);
@@ -146,6 +222,7 @@ describe('grok-runtime', () => {
       apiKey: '',
       binPath: 'g',
       isThirdParty: true,
+      reasoningEffort: '',
     });
     assert.match(err || '', /API Key/);
   });
@@ -154,9 +231,12 @@ describe('grok-runtime', () => {
     const args = buildGrokAgentArgs({
       model: 'gpt-4o-mini',
       baseUrl: 'https://api.example.com/v1',
+      reasoningEffort: 'low',
     });
     assert.deepEqual(args, [
       'agent',
+      '--reasoning-effort',
+      'low',
       '-m',
       'gpt-4o-mini',
       '--xai-api-base-url',
@@ -177,7 +257,7 @@ describe('grok-runtime', () => {
     assert.equal(env.GROK_HOME, '/tmp/gh');
   });
 
-  it('grokRuntimeSignature changes when model or key changes', () => {
+  it('grokRuntimeSignature changes when model or key or effort changes', () => {
     const a = resolveGrokRuntime({
       grokActiveProfile: 'supergrok',
       grokProfiles: DEFAULT_GROK_PROFILES,
@@ -186,20 +266,28 @@ describe('grok-runtime', () => {
       grokActiveProfile: 'supergrok',
       grokProfiles: [{ ...DEFAULT_GROK_PROFILES[0], model: 'other' }],
     });
+    const c = resolveGrokRuntime({
+      grokActiveProfile: 'supergrok',
+      grokReasoningEffort: 'high',
+      grokProfiles: DEFAULT_GROK_PROFILES,
+    });
     assert.notEqual(grokRuntimeSignature(a), grokRuntimeSignature(b));
+    assert.notEqual(grokRuntimeSignature(a), grokRuntimeSignature(c));
   });
 
-  it('formatGrokRuntimeLabel shows host for third-party', () => {
+  it('formatGrokRuntimeLabel shows host for third-party and effort', () => {
     const label = formatGrokRuntimeLabel({
       profileId: 'x',
-      label: 'DMX',
-      model: 'm',
+      label: 'GPT-5.6 Luna',
+      model: 'gpt-5.6-luna',
       baseUrl: 'https://www.dmxapi.cn/v1',
       apiKey: '',
       binPath: 'g',
       isThirdParty: true,
+      reasoningEffort: 'high',
     });
-    assert.match(label, /DMX/);
+    assert.match(label, /GPT-5\.6 Luna/);
     assert.match(label, /dmxapi/);
+    assert.match(label, /思考高/);
   });
 });

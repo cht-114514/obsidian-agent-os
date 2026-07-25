@@ -49,7 +49,11 @@ import {
 } from './chat-history.js';
 import {
   formatGrokRuntimeLabel,
+  formatProfileOptionLabel,
+  formatReasoningEffortLabel,
   normalizeGrokProfiles,
+  normalizeReasoningEffort,
+  REASONING_EFFORT_LEVELS,
   resolveGrokRuntime,
 } from './grok-runtime.js';
 import {
@@ -165,7 +169,15 @@ export function mountMeSoulChat(containerEl, ctx) {
     cls: 'me-soul-model-select me-soul-model-select--header',
     attr: {
       'aria-label': '切换模型',
-      title: '切换 Grok Build 模型 / 第三方 API',
+      title: '切换 Grok订阅 / 第三方模型',
+    },
+  });
+
+  const effortSelect = tools.createEl('select', {
+    cls: 'me-soul-model-select me-soul-model-select--header me-soul-effort-select',
+    attr: {
+      'aria-label': '思考等级',
+      title: '思考等级（reasoning effort）',
     },
   });
 
@@ -480,7 +492,14 @@ export function mountMeSoulChat(containerEl, ctx) {
     cls: 'me-soul-model-select me-soul-model-select--composer',
     attr: {
       'aria-label': '切换模型',
-      title: '切换 Grok Build 模型 / 第三方 API',
+      title: '切换 Grok订阅 / 第三方模型',
+    },
+  });
+  const effortSelectComposer = actionsEl.createEl('select', {
+    cls: 'me-soul-model-select me-soul-model-select--composer me-soul-effort-select',
+    attr: {
+      'aria-label': '思考等级',
+      title: '思考等级（reasoning effort）',
     },
   });
   const micBtn = actionsEl.createEl('button', {
@@ -531,7 +550,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     sel.empty();
     for (const p of profiles) {
       const opt = sel.createEl('option', {
-        text: p.label || p.model || p.id,
+        text: formatProfileOptionLabel(p),
         attr: { value: p.id },
       });
       if (p.id === active) opt.selected = true;
@@ -541,11 +560,40 @@ export function mountMeSoulChat(containerEl, ctx) {
     sel.setAttr('title', `当前：${label}`);
   }
 
+  function fillEffortSelect(sel) {
+    if (!sel) return;
+    const active = normalizeReasoningEffort(plugin.settings.grokReasoningEffort);
+    sel.empty();
+    const def = sel.createEl('option', {
+      text: '思考·默认',
+      attr: { value: '' },
+    });
+    if (!active) def.selected = true;
+    for (const level of REASONING_EFFORT_LEVELS) {
+      const opt = sel.createEl('option', {
+        text: `思考·${formatReasoningEffortLabel(level)}`,
+        attr: { value: level },
+      });
+      if (level === active) opt.selected = true;
+    }
+    sel.setAttr(
+      'title',
+      `思考等级：${formatReasoningEffortLabel(active)}${active ? `（${active}）` : ''}`
+    );
+  }
+
   function refreshModelSelect() {
     fillModelSelect(modelSelect);
     fillModelSelect(modelSelectComposer);
   }
+
+  function refreshEffortSelect() {
+    fillEffortSelect(effortSelect);
+    fillEffortSelect(effortSelectComposer);
+  }
+
   refreshModelSelect();
+  refreshEffortSelect();
 
   async function onModelChange(fromEl) {
     const id = fromEl?.value;
@@ -569,6 +617,7 @@ export function mountMeSoulChat(containerEl, ctx) {
         /* */
       }
       refreshModelSelect();
+      refreshEffortSelect();
       setStatus(`模型：${formatGrokRuntimeLabel(rt)}`);
       notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条消息生效）`);
     } catch (e) {
@@ -576,8 +625,42 @@ export function mountMeSoulChat(containerEl, ctx) {
       refreshModelSelect();
     }
   }
+
+  async function onEffortChange(fromEl) {
+    const next = normalizeReasoningEffort(fromEl?.value);
+    const cur = normalizeReasoningEffort(plugin.settings.grokReasoningEffort);
+    if (next === cur) return;
+    if (busy) {
+      notify('请等当前回复结束后再切换思考等级');
+      refreshEffortSelect();
+      return;
+    }
+    try {
+      const rt = plugin.setGrokReasoningEffort
+        ? await plugin.setGrokReasoningEffort(next)
+        : (() => {
+            plugin.settings.grokReasoningEffort = next;
+            return resolveGrokRuntime(plugin.settings);
+          })();
+      try {
+        plugin.acp?.resetSession?.();
+      } catch {
+        /* */
+      }
+      refreshEffortSelect();
+      const label = formatReasoningEffortLabel(rt.reasoningEffort);
+      setStatus(`思考等级：${label}${rt.reasoningEffort ? `（${rt.reasoningEffort}）` : ''}`);
+      notify(`思考等级 → ${label}${rt.reasoningEffort ? `（${rt.reasoningEffort}）` : ''}（下一条消息生效）`);
+    } catch (e) {
+      notify(e?.message || String(e));
+      refreshEffortSelect();
+    }
+  }
+
   modelSelect.onchange = () => onModelChange(modelSelect);
   modelSelectComposer.onchange = () => onModelChange(modelSelectComposer);
+  effortSelect.onchange = () => onEffortChange(effortSelect);
+  effortSelectComposer.onchange = () => onEffortChange(effortSelectComposer);
 
   /** @type {VoiceInputSession | null} */
   let voiceSession = null;

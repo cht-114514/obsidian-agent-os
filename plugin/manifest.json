@@ -1,7 +1,7 @@
 {
   "id": "obsidian-agent-os",
   "name": "Obsidian Agent OS",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.5.0",
   "description": "Beta: vault-native agent OS — soul loops (thoughts/insights/care), digest confirm, optional embeddings.",
   "author": "cht-114514",

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-agent-os",
-  "version": "0.1.1-beta",
+  "version": "0.1.2-beta",
   "private": false,
   "description": "Obsidian Agent OS (beta): Vault-native Obsidian agent + soul loops (thoughts, insights, care). Inspired by Cola; not affiliated.",
   "license": "MIT",
