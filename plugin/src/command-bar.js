@@ -12,8 +12,10 @@ import {
 } from './editor-apply.js';
 import { buildCommandBarPrompt, runAgentTurn } from './agent-turn.js';
 import {
+  REASONING_EFFORT_LEVELS,
   formatGrokRuntimeLabel,
   normalizeGrokProfiles,
+  normalizeReasoningEffort,
   resolveGrokRuntime,
 } from './grok-runtime.js';
 import {
@@ -21,16 +23,41 @@ import {
   appendFeedbackEntry,
   updateFeedbackVote,
 } from './feedback-store.js';
+import { renderMarkdownWithMath } from './markdown-render.js';
+import {
+  loadSessionFromVault,
+  saveSessionToVault,
+  appendMessage,
+  sessionToCmdbarTurns,
+  createEmptySession,
+  rotateSession,
+  listArchivedSessions,
+  restoreArchivedSession,
+  summarizeSession,
+  SESSION_PATH,
+} from './chat-history.js';
 
 const POSITION_KEY = 'me-soul-cmdbar-pos';
 
 /**
  * @param {import('obsidian').App} app
  * @param {any} plugin MeSoulPlugin
- * @param {{ Notice: any }} deps
+ * @param {{
+ *   Notice: any,
+ *   MarkdownRenderer?: any,
+ *   loadMathJax?: () => Promise<void>,
+ *   renderMath?: (source: string, display: boolean) => HTMLElement,
+ *   finishRenderMath?: () => Promise<void>,
+ * }} deps
  */
 export function createCommandBarController(app, plugin, deps) {
-  const { Notice } = deps;
+  const {
+    Notice,
+    MarkdownRenderer,
+    loadMathJax,
+    renderMath,
+    finishRenderMath,
+  } = deps;
 
   /** @type {HTMLElement | null} */
   let root = null;
@@ -54,8 +81,24 @@ export function createCommandBarController(app, plugin, deps) {
   let sendBtn = null;
   /** @type {HTMLSelectElement | null} */
   let modelSelect = null;
+  /** @type {HTMLSelectElement | null} */
+  let effortSelect = null;
+  /** @type {HTMLElement | null} */
+  let sessionWrap = null;
+  /** @type {HTMLButtonElement | null} */
+  let sessionBtn = null;
+  /** @type {HTMLElement | null} */
+  let sessionMenu = null;
+  /** @type {(() => void) | null} */
+  let removeSessionMenuOutside = null;
+  /** @type {{ resolve: () => void, token: { aborted: boolean } } | null} */
+  let pendingFullscreenOpen = null;
 
   let busy = false;
+  /** @type {((busy: boolean) => void) | null} */
+  let busyListener = null;
+  let resultRenderToken = 0;
+  let transcriptRenderToken = 0;
   /** @type {import('./editor-apply.js').EditorCapture | null} */
   let lastCapture = null;
   /** @type {import('obsidian').Editor | null} */
@@ -251,12 +294,59 @@ export function createCommandBarController(app, plugin, deps) {
       cls: 'me-soul-cmdbar-model',
       attr: {
         'aria-label': '切换模型',
-        title: '切换 Grok Build 模型 / 第三方 API',
+        title: '切换模型（Grok订阅 / 第三方）',
       },
     });
     modelSelect.onchange = () => onModelChange();
 
+    effortSelect = head.createEl('select', {
+      cls: 'me-soul-cmdbar-model me-soul-cmdbar-effort',
+      attr: {
+        'aria-label': '思考等级',
+        title: '思考等级（reasoning effort，下一条生效）',
+      },
+    });
+    effortSelect.onchange = () => onEffortChange();
+
+    sessionWrap = head.createDiv({ cls: 'me-soul-cmdbar-session-wrap' });
+    sessionBtn = sessionWrap.createEl('button', {
+      cls: 'me-soul-cmdbar-session-btn',
+      attr: {
+        type: 'button',
+        'aria-label': '会话',
+        'aria-expanded': 'false',
+        title: '新建或加载历史对话',
+      },
+      text: '会话',
+    });
+    sessionMenu = sessionWrap.createDiv({
+      cls: 'me-soul-cmdbar-session-menu',
+      attr: { role: 'menu', 'aria-hidden': 'true' },
+    });
+    sessionBtn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (busy) {
+        notify('生成中，稍后再切换会话');
+        return;
+      }
+      void toggleSessionMenu();
+    };
+
     statusEl = head.createSpan({ cls: 'me-soul-cmdbar-status', text: '' });
+
+    const fullBtn = head.createEl('button', {
+      cls: 'me-soul-cmdbar-icon-btn',
+      attr: {
+        type: 'button',
+        'aria-label': '全屏对话',
+        title: '打开全屏 Agent（共享聊天记录）',
+      },
+      text: '⛶',
+    });
+    fullBtn.onclick = () => {
+      void openFullscreenChat();
+    };
 
     const closeBtn = head.createEl('button', {
       cls: 'me-soul-cmdbar-close',
@@ -527,6 +617,40 @@ export function createCommandBarController(app, plugin, deps) {
     } catch {
       /* */
     }
+    if (effortSelect) {
+      const activeProfile = profiles.find((p) => p.id === active) || profiles[0];
+      const current = normalizeReasoningEffort(activeProfile?.reasoningEffort);
+      effortSelect.empty();
+      for (const l of REASONING_EFFORT_LEVELS) {
+        const opt = effortSelect.createEl('option', {
+          text: l.value ? `思考:${l.value}` : '思考:默认',
+          attr: { value: l.value },
+        });
+        if (l.value === current) opt.selected = true;
+      }
+    }
+  }
+
+  async function onEffortChange() {
+    if (!effortSelect) return;
+    if (busy) {
+      notify('请等当前回复结束后再调整思考等级');
+      refreshModelSelect();
+      return;
+    }
+    try {
+      await plugin.setGrokReasoningEffort(effortSelect.value);
+      try {
+        plugin.acp?.resetSession?.();
+      } catch {
+        /* */
+      }
+      refreshModelSelect();
+      notify(`思考等级 → ${effortSelect.value || '默认'}（下一条生效）`);
+    } catch (e) {
+      notify(e?.message || String(e));
+      refreshModelSelect();
+    }
   }
 
   async function onModelChange() {
@@ -607,11 +731,22 @@ export function createCommandBarController(app, plugin, deps) {
    * @param {{ phase?: 'thinking' | 'streaming' | 'tool', tip?: string }} [opts]
    */
   function setBusy(b, opts = {}) {
+    const prev = busy;
     busy = b;
     if (sendBtn) sendBtn.setText(b ? '停止' : '发送');
     if (inputEl) inputEl.toggleClass('is-busy', b);
     if (root) root.toggleClass('is-busy', b);
     if (modelSelect) modelSelect.disabled = !!b;
+    if (effortSelect) effortSelect.disabled = !!b;
+    if (sessionBtn) sessionBtn.disabled = !!b;
+    if (b) closeSessionMenu();
+    if (prev !== !!b) {
+      try {
+        busyListener?.(!!b);
+      } catch {
+        /* */
+      }
+    }
 
     if (!b) {
       hideThinking();
@@ -741,8 +876,9 @@ export function createCommandBarController(app, plugin, deps) {
    * Rebuild transcript. Latest assistant reply (if any) stays in resultEl
    * with apply/feedback chrome — prior turns only appear here.
    */
-  function paintTranscript() {
+  async function paintTranscript() {
     if (!transcriptEl) return;
+    const token = ++transcriptRenderToken;
     transcriptEl.empty();
     let list = turns;
     // Keep newest assistant message out of the scroll log when result pane shows it
@@ -755,6 +891,7 @@ export function createCommandBarController(app, plugin, deps) {
     }
     transcriptEl.style.display = '';
     for (const turn of list) {
+      if (token !== transcriptRenderToken) return;
       const bubble = transcriptEl.createDiv({
         cls:
           'me-soul-cmdbar-msg' +
@@ -764,39 +901,326 @@ export function createCommandBarController(app, plugin, deps) {
         cls: 'me-soul-cmdbar-msg-role',
         text: turn.role === 'user' ? '你' : plugin.settings.agentName || 'Agent',
       });
-      bubble.createDiv({
-        cls: 'me-soul-cmdbar-msg-text',
-        text: turn.text,
-      });
+      const textEl = bubble.createDiv({ cls: 'me-soul-cmdbar-msg-text' });
+      if (turn.role === 'assistant' && MarkdownRenderer) {
+        await renderMarkdownInto(textEl, turn.text || '');
+      } else {
+        textEl.setText(turn.text || '');
+      }
     }
     requestAnimationFrame(() => {
       if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
     });
   }
 
-  function showResult(text, { streaming = false } = {}) {
+  /**
+   * @param {HTMLElement} el
+   * @param {string} markdown
+   */
+  async function renderMarkdownInto(el, markdown) {
+    if (!MarkdownRenderer) {
+      el.setText(markdown || '');
+      return;
+    }
+    el.removeClass('is-streaming');
+    try {
+      await renderMarkdownWithMath({
+        app,
+        MarkdownRenderer,
+        component: plugin,
+        el,
+        markdown: markdown || '',
+        sourcePath:
+          app.workspace.getActiveFile?.()?.path || 'agent-inbox/sessions/current.md',
+        loadMathJax,
+        finishRenderMath,
+        renderMath,
+        copyText: async (text) => {
+          try {
+            await navigator.clipboard.writeText(text || '');
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        onCopied: () => notify('已复制 LaTeX'),
+      });
+    } catch {
+      el.setText(markdown || '');
+    }
+  }
+
+  async function showResult(text, { streaming = false } = {}) {
     if (!resultEl) return;
+    const token = ++resultRenderToken;
     const has = !!(text && String(text).trim()) || streaming;
     resultEl.style.display = has ? '' : 'none';
     resultEl.empty();
-    if (has) {
-      resultEl.createDiv({
-        cls: 'me-soul-cmdbar-msg-role',
-        text: streaming
-          ? `${plugin.settings.agentName || 'Agent'} · 回复中`
-          : `${plugin.settings.agentName || 'Agent'} · 最新回复`,
-      });
-      const body = resultEl.createDiv({
-        cls: 'me-soul-cmdbar-result-text' + (streaming ? ' is-streaming' : ''),
-        text: text || (streaming ? '' : ''),
-      });
-      // Explicitly selectable / focusable for Cmd/Ctrl+C
-      body.setAttr('tabindex', '0');
-      body.setAttr('role', 'textbox');
-      body.setAttr('aria-readonly', 'true');
-      body.setAttr('aria-label', 'Agent 回复（可选中复制）');
+    if (!has) return;
+
+    resultEl.createDiv({
+      cls: 'me-soul-cmdbar-msg-role',
+      text: streaming
+        ? `${plugin.settings.agentName || 'Agent'} · 回复中`
+        : `${plugin.settings.agentName || 'Agent'} · 最新回复`,
+    });
+    const body = resultEl.createDiv({
+      cls: 'me-soul-cmdbar-result-text' + (streaming ? ' is-streaming' : ''),
+    });
+    body.setAttr('tabindex', '0');
+    body.setAttr('role', 'textbox');
+    body.setAttr('aria-readonly', 'true');
+    body.setAttr('aria-label', 'Agent 回复（可选中复制）');
+
+    if (streaming) {
+      body.setText(text || '');
+    } else {
+      await renderMarkdownInto(body, text || '');
+      if (token !== resultRenderToken) return;
     }
     if (streaming && text) hideThinking();
+  }
+
+  /**
+   * Append one turn into shared vault session (fullscreen + cmdbar).
+   * @param {'user' | 'assistant'} role
+   * @param {string} text
+   */
+  async function persistSharedMessage(role, text) {
+    const body = String(text || '');
+    if (!body.trim()) return;
+    try {
+      let session = await loadSessionFromVault(app);
+      session = appendMessage(session, {
+        role: role === 'user' ? 'user' : 'agent',
+        text: body,
+      });
+      await saveSessionToVault(app, session);
+    } catch (e) {
+      console.warn('cmdbar session persist failed', e);
+    }
+  }
+
+  async function hydrateFromVault() {
+    try {
+      const session = await loadSessionFromVault(app);
+      turns = sessionToCmdbarTurns(session);
+    } catch (e) {
+      console.warn('cmdbar hydrate failed', e);
+      turns = [];
+    }
+    lastFullText = '';
+    lastUserPrompt = '';
+    lastMode = 'show_only';
+    lastFbId = null;
+    lastVote = null;
+    showFallbackActions(false);
+    showFeedbackRow(false);
+
+    const last = turns.length ? turns[turns.length - 1] : null;
+    if (last?.role === 'assistant') {
+      lastFullText = last.text || '';
+      await paintTranscript();
+      await showResult(last.text || '');
+      showFallbackActions(!!String(last.text || '').trim());
+    } else {
+      await paintTranscript();
+      await showResult('');
+    }
+  }
+
+  /**
+   * Flush in-memory turns to shared current.json before rotate / restore.
+   */
+  async function flushTurnsToVault() {
+    if (!turns.length) return;
+    try {
+      const existing = await loadSessionFromVault(app);
+      let session = createEmptySession();
+      session.id = existing.id || session.id;
+      for (const t of turns) {
+        session = appendMessage(session, {
+          role: t.role === 'user' ? 'user' : 'agent',
+          text: t.text,
+        });
+      }
+      await saveSessionToVault(app, session);
+    } catch (e) {
+      console.warn('cmdbar flush turns failed', e);
+    }
+  }
+
+  function formatHistTime(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch {
+      return '';
+    }
+  }
+
+  function closeSessionMenu() {
+    if (sessionMenu) {
+      sessionMenu.removeClass('is-open');
+      sessionMenu.setAttr('aria-hidden', 'true');
+    }
+    if (sessionBtn) sessionBtn.setAttr('aria-expanded', 'false');
+    if (removeSessionMenuOutside) {
+      removeSessionMenuOutside();
+      removeSessionMenuOutside = null;
+    }
+  }
+
+  async function paintSessionMenu() {
+    if (!sessionMenu) return;
+    sessionMenu.empty();
+
+    const newItem = sessionMenu.createEl('button', {
+      cls: 'me-soul-cmdbar-session-item is-action',
+      attr: { type: 'button', role: 'menuitem' },
+      text: '＋ 新会话',
+    });
+    newItem.onclick = () => {
+      void startNewSession();
+    };
+
+    sessionMenu.createDiv({ cls: 'me-soul-cmdbar-session-sep' });
+
+    /** @type {Array<{ path: string, id: string, updatedAt: string, messageCount: number, title: string, isCurrent?: boolean }>} */
+    const rows = [];
+    try {
+      const cur = await loadSessionFromVault(app);
+      const sum = summarizeSession(cur, SESSION_PATH);
+      rows.push({ ...sum, isCurrent: true });
+    } catch {
+      /* */
+    }
+    try {
+      const archived = await listArchivedSessions(app);
+      for (const a of archived) rows.push({ ...a, isCurrent: false });
+    } catch (e) {
+      console.warn('list archives failed', e);
+    }
+
+    if (!rows.length) {
+      sessionMenu.createDiv({
+        cls: 'me-soul-cmdbar-session-empty',
+        text: '暂无历史会话',
+      });
+      return;
+    }
+
+    for (const row of rows) {
+      const item = sessionMenu.createEl('button', {
+        cls:
+          'me-soul-cmdbar-session-item' + (row.isCurrent ? ' is-current' : ''),
+        attr: {
+          type: 'button',
+          role: 'menuitem',
+          title: row.isCurrent ? '当前会话' : `加载：${row.title}`,
+        },
+      });
+      if (row.isCurrent) item.setAttr('disabled', 'true');
+      const title = item.createDiv({ cls: 'me-soul-cmdbar-session-item-title' });
+      title.setText(row.isCurrent ? `当前 · ${row.title}` : row.title);
+      item.createDiv({
+        cls: 'me-soul-cmdbar-session-item-meta',
+        text: `${row.messageCount} 条 · ${formatHistTime(row.updatedAt)}`,
+      });
+      if (!row.isCurrent) {
+        item.onclick = () => {
+          void loadSessionFromArchive(row.path);
+        };
+      }
+    }
+  }
+
+  async function toggleSessionMenu() {
+    if (!sessionMenu || !sessionBtn) return;
+    const open = !sessionMenu.hasClass('is-open');
+    if (!open) {
+      closeSessionMenu();
+      return;
+    }
+    await paintSessionMenu();
+    sessionMenu.addClass('is-open');
+    sessionMenu.setAttr('aria-hidden', 'false');
+    sessionBtn.setAttr('aria-expanded', 'true');
+
+    if (removeSessionMenuOutside) removeSessionMenuOutside();
+    const onDoc = (ev) => {
+      const t = /** @type {Node} */ (ev.target);
+      if (sessionWrap && sessionWrap.contains(t)) return;
+      closeSessionMenu();
+    };
+    // next tick so this click doesn't immediately close
+    requestAnimationFrame(() => {
+      document.addEventListener('pointerdown', onDoc, true);
+      removeSessionMenuOutside = () =>
+        document.removeEventListener('pointerdown', onDoc, true);
+    });
+  }
+
+  async function startNewSession() {
+    if (busy) {
+      notify('生成中，稍后再开新会话');
+      return;
+    }
+    closeSessionMenu();
+    try {
+      await flushTurnsToVault();
+      plugin.acp?.resetSession?.();
+      const cur = await loadSessionFromVault(app);
+      await rotateSession(app, cur);
+      await hydrateFromVault();
+      notify('新会话已开启（上一会话已归档）');
+    } catch (e) {
+      notify(e?.message || '无法开启新会话');
+    }
+  }
+
+  async function loadSessionFromArchive(archivePath) {
+    if (busy) {
+      notify('生成中，稍后再加载');
+      return;
+    }
+    closeSessionMenu();
+    try {
+      await flushTurnsToVault();
+      plugin.acp?.resetSession?.();
+      await restoreArchivedSession(app, archivePath);
+      await hydrateFromVault();
+      notify('已加载历史会话');
+    } catch (e) {
+      notify(e?.message || '加载失败');
+    }
+  }
+
+  async function openFullscreenChat() {
+    // Do not cancel an in-flight turn — wait for it to finish, then open.
+    if (busy) {
+      notify('回复生成中，完成后会打开全屏…');
+      const token = { aborted: false };
+      await new Promise((resolve) => {
+        pendingFullscreenOpen = { resolve, token };
+      });
+      if (token.aborted) return;
+    }
+
+    try {
+      await flushTurnsToVault();
+    } catch (e) {
+      console.warn('flush before fullscreen failed', e);
+    }
+    close({ reason: 'fullscreen', cancelIfBusy: false });
+    try {
+      await plugin.activateView?.();
+    } catch (e) {
+      notify(e?.message || '无法打开全屏对话');
+    }
   }
 
   function showFallbackActions(show) {
@@ -935,7 +1359,12 @@ export function createCommandBarController(app, plugin, deps) {
   }
 
   /**
-   * @param {{ seedText?: string, forceOpen?: boolean, keepHistory?: boolean }} [opts]
+   * @param {{
+   *   seedText?: string,
+   *   forceOpen?: boolean,
+   *   keepHistory?: boolean,
+   *   autoSubmit?: boolean,
+   * }} [opts]
    */
   function open(opts = {}) {
     if (!isEnabled() && !opts.forceOpen) {
@@ -945,19 +1374,8 @@ export function createCommandBarController(app, plugin, deps) {
     ensureDom();
     if (!root || !panelEl) return;
 
-    // Fresh session unless re-open while already open with keepHistory
-    if (!isOpen() || !opts.keepHistory) {
-      turns = [];
-      lastFullText = '';
-      lastUserPrompt = '';
-      lastMode = 'show_only';
-      lastFbId = null;
-      lastVote = null;
-      paintTranscript();
-      showResult('');
-      showFallbackActions(false);
-      showFeedbackRow(false);
-    }
+    const wasOpen = isOpen();
+    const keep = !!(wasOpen && opts.keepHistory);
 
     refreshContextFromEditor();
     placePanel();
@@ -965,19 +1383,11 @@ export function createCommandBarController(app, plugin, deps) {
     root.addClass('is-open');
     root.setAttr('aria-hidden', 'false');
     hideThinking();
-    setBusy(false);
+    if (!opts.autoSubmit) setBusy(false);
     refreshModelSelect();
 
     const title = root.querySelector('.me-soul-cmdbar-title');
     if (title) title.setText(plugin.settings.agentName || 'Agent');
-
-    if (inputEl) {
-      if (opts.seedText != null) inputEl.value = opts.seedText;
-      requestAnimationFrame(() => {
-        inputEl?.focus();
-        if (opts.seedText != null) inputEl?.select?.();
-      });
-    }
 
     if (removeKeyHandler) removeKeyHandler();
     const onKey = (ev) => {
@@ -996,17 +1406,49 @@ export function createCommandBarController(app, plugin, deps) {
     removeKeyHandler = () => document.removeEventListener('keydown', onKey, true);
 
     attachContextListeners();
+
+    void (async () => {
+      if (!keep) {
+        await hydrateFromVault();
+      }
+      if (inputEl) {
+        if (opts.seedText != null) inputEl.value = opts.seedText;
+        if (opts.autoSubmit && String(opts.seedText || '').trim()) {
+          void submit();
+          return;
+        }
+        requestAnimationFrame(() => {
+          inputEl?.focus();
+          if (opts.seedText != null && !opts.autoSubmit) inputEl?.select?.();
+        });
+      }
+    })();
   }
 
-  function close() {
-    if (busy) {
+  function close(opts = {}) {
+    const reason = opts.reason || 'close';
+    const cancelIfBusy = opts.cancelIfBusy !== false;
+
+    // User dismissed the bar (not fullscreen handoff) while waiting to open fullscreen
+    if (pendingFullscreenOpen && reason !== 'fullscreen') {
+      pendingFullscreenOpen.token.aborted = true;
+      const r = pendingFullscreenOpen.resolve;
+      pendingFullscreenOpen = null;
+      r();
+    }
+
+    if (busy && cancelIfBusy) {
       try {
         plugin.acp?.cancel?.();
       } catch {
         /* */
       }
       setBusy(false);
+    } else if (busy && !cancelIfBusy) {
+      // Keep request alive; only hide UI
+      setBusy(false);
     }
+    closeSessionMenu();
     if (root) {
       root.removeClass('is-open');
       root.setAttr('aria-hidden', 'true');
@@ -1077,7 +1519,8 @@ export function createCommandBarController(app, plugin, deps) {
 
     // Commit user turn to transcript + clear input so follow-ups are natural
     turns.push({ role: 'user', text });
-    paintTranscript();
+    void paintTranscript();
+    void persistSharedMessage('user', text);
     if (inputEl) {
       inputEl.value = '';
     }
@@ -1167,93 +1610,79 @@ export function createCommandBarController(app, plugin, deps) {
       }
     });
 
-    if (!result.ok) {
-      const errText = result.error || '失败';
-      lastFullText = errText;
-      turns.push({ role: 'assistant', text: errText });
-      paintTranscript();
-      showResult(errText);
-      showFallbackActions(false);
-      showFeedbackRow(false);
-      return;
-    }
+    try {
+      if (!result.ok) {
+        const errText = result.error || '失败';
+        lastFullText = errText;
+        turns.push({ role: 'assistant', text: errText });
+        await persistSharedMessage('assistant', errText);
+        void paintTranscript();
+        void showResult(errText);
+        showFallbackActions(false);
+        showFeedbackRow(false);
+        return;
+      }
 
-    if (result.stopReason === 'cancelled') {
-      const base =
-        stripApplyHeaderForPreview(lastFullText) || lastFullText || '';
-      const cancelledBody = String(base).trim()
-        ? `${base}\n（已停止）`
-        : '（已停止）';
-      lastFullText = cancelledBody;
-      turns.push({ role: 'assistant', text: cancelledBody });
-      paintTranscript();
-      showResult(cancelledBody);
-      showFallbackActions(!!String(base).trim());
-      showFeedbackRow(!!String(base).trim());
-      return;
-    }
+      if (result.stopReason === 'cancelled') {
+        const base =
+          stripApplyHeaderForPreview(lastFullText) || lastFullText || '';
+        const cancelledBody = String(base).trim()
+          ? `${base}\n（已停止）`
+          : '（已停止）';
+        lastFullText = cancelledBody;
+        turns.push({ role: 'assistant', text: cancelledBody });
+        await persistSharedMessage('assistant', cancelledBody);
+        void paintTranscript();
+        void showResult(cancelledBody);
+        showFallbackActions(!!String(base).trim());
+        showFeedbackRow(!!String(base).trim());
+        return;
+      }
 
-    lastFullText = result.text || lastFullText;
-    const parsed = parseApplyResponse(lastFullText, {
-      hasSelection: !!lastCapture?.hasSelection,
-    });
-    lastMode = parsed.mode;
-    const body = parsed.body;
+      lastFullText = result.text || lastFullText;
+      const parsed = parseApplyResponse(lastFullText, {
+        hasSelection: !!lastCapture?.hasSelection,
+      });
+      lastMode = parsed.mode;
+      const body = parsed.body;
 
-    if (!String(body).trim()) {
-      const hint = [
-        '（模型没有返回正文）',
-        sawTool
-          ? '刚才走了工具调用，可能被卡住。请重试，或切换模型。'
-          : '可能只输出了内部思考。请重试或换一句指令。',
-        thoughtBuf.trim()
-          ? `\n思考片段：${thoughtBuf.replace(/\s+/g, ' ').trim().slice(0, 200)}`
-          : '',
-      ]
-        .filter(Boolean)
-        .join('\n');
-      lastFullText = hint;
-      turns.push({ role: 'assistant', text: hint });
-      paintTranscript();
-      showResult(hint);
-      showFallbackActions(false);
-      showFeedbackRow(false);
-      notify('没有收到正文');
-      return;
-    }
+      if (!String(body).trim()) {
+        const hint = [
+          '（模型没有返回正文）',
+          sawTool
+            ? '刚才走了工具调用，可能被卡住。请重试，或切换模型。'
+            : '可能只输出了内部思考。请重试或换一句指令。',
+          thoughtBuf.trim()
+            ? `\n思考片段：${thoughtBuf.replace(/\s+/g, ' ').trim().slice(0, 200)}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        lastFullText = hint;
+        turns.push({ role: 'assistant', text: hint });
+        await persistSharedMessage('assistant', hint);
+        void paintTranscript();
+        void showResult(hint);
+        showFallbackActions(false);
+        showFeedbackRow(false);
+        notify('没有收到正文');
+        return;
+      }
 
-    lastFullText = body;
-    turns.push({ role: 'assistant', text: body });
-    paintTranscript();
-    showResult(body);
-    showFeedbackRow(true);
-
-    if (parsed.mode === 'show_only') {
+      lastFullText = body;
+      turns.push({ role: 'assistant', text: body });
+      await persistSharedMessage('assistant', body);
+      void paintTranscript();
+      void showResult(body);
+      showFeedbackRow(true);
+      // Never auto-write into the note — user must click 插入/替换
       showFallbackActions(true);
-      return;
-    }
-
-    // Re-capture right before auto-apply in case cursor moved during generation
-    refreshContextFromEditor();
-
-    if (!lastEditor) {
-      showFallbackActions(true);
-      notify('无活动编辑器，结果仅展示');
-      return;
-    }
-
-    const applied = applyToEditor(lastEditor, parsed.mode, body);
-    if (applied.applied) {
-      notify(
-        parsed.mode === 'replace_selection'
-          ? '已替换选区（Cmd/Ctrl+Z 可撤销）'
-          : `已插入 L${(lastCapture?.cursor?.line ?? 0) + 1}:${(lastCapture?.cursor?.ch ?? 0) + 1}（Cmd/Ctrl+Z 可撤销）`
-      );
-      showResult(cleanModelOutput(body, parsed.mode));
-      showFallbackActions(true);
-    } else {
-      showFallbackActions(true);
-      notify('未自动写入，可手动插入/替换/复制');
+    } finally {
+      if (pendingFullscreenOpen) {
+        const r = pendingFullscreenOpen.resolve;
+        pendingFullscreenOpen = null;
+        r();
+      }
     }
   }
 
@@ -1277,6 +1706,17 @@ export function createCommandBarController(app, plugin, deps) {
     statusEl = null;
     sendBtn = null;
     modelSelect = null;
+    effortSelect = null;
+    sessionWrap = null;
+    sessionBtn = null;
+    sessionMenu = null;
+  }
+
+  /**
+   * @param {((busy: boolean) => void) | null} fn
+   */
+  function onBusyChange(fn) {
+    busyListener = typeof fn === 'function' ? fn : null;
   }
 
   return {
@@ -1284,6 +1724,8 @@ export function createCommandBarController(app, plugin, deps) {
     close,
     toggle,
     isOpen,
+    isBusy: () => busy,
+    onBusyChange,
     destroy,
     submit,
   };

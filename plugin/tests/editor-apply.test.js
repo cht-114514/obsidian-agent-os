@@ -180,6 +180,34 @@ describe('buildCommandBarPrompt — NL native', () => {
     assert.match(prompt, /再短一点/);
     assert.match(prompt, /第 12 行/);
   });
+
+  it('empty turns do not evict earlier meaningful context', () => {
+    const prompt = buildCommandBarPrompt({
+      userText: '裂项之后好像也没法求和',
+      capture: {
+        path: '基础学科/数学.md',
+        selection: '',
+        hasSelection: false,
+        cursor: { line: 0, ch: 0 },
+        vicinityBefore: '',
+        vicinityAfter: '',
+        noteExcerpt: '',
+      },
+      history: [
+        { role: 'user', text: '变式1的思路是怎样的' },
+        { role: 'assistant', text: '配对后得到 4k-1 和 4k+1，再裂项。' },
+        { role: 'user', text: 'lie xiang' },
+        { role: 'assistant', text: '' },
+        { role: 'user', text: 'lie xiang' },
+        { role: 'assistant', text: '' },
+        { role: 'user', text: 'lie xiang' },
+        { role: 'assistant', text: '' },
+      ],
+    });
+    assert.match(prompt, /变式1/);
+    assert.match(prompt, /4k-1/);
+    assert.match(prompt, /先依据上述对话理解指代/);
+  });
 });
 
 describe('end-to-end parse → apply', () => {

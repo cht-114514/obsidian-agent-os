@@ -14,6 +14,7 @@
  *   model: string,
  *   baseUrl?: string,
  *   apiKey?: string,
+ *   reasoningEffort?: string,
  * }} GrokProfile
  *
  * @typedef {{
@@ -24,6 +25,7 @@
  *   apiKey: string,
  *   binPath: string,
  *   isThirdParty: boolean,
+ *   reasoningEffort: string,
  * }} GrokRuntime
  *
  * @typedef {{
@@ -41,16 +43,97 @@
 /** Config section name for plugin-managed third-party model. */
 export const THIRD_PARTY_MODEL_ALIAS = 'obsidian_tp';
 
-/** Built-in profile: official SuperGrok / xAI (uses grok login or XAI_API_KEY). */
+/**
+ * Reasoning effort levels understood by `grok agent --reasoning-effort`.
+ * '' = follow the model's default. Unsupported levels are ignored by the CLI.
+ */
+export const REASONING_EFFORT_LEVELS = [
+  { value: '', label: '默认（跟随模型）' },
+  { value: 'minimal', label: '最省 minimal' },
+  { value: 'low', label: '低 low' },
+  { value: 'medium', label: '中 medium' },
+  { value: 'high', label: '高 high' },
+  { value: 'xhigh', label: '超高 xhigh' },
+  { value: 'max', label: '最强 max' },
+];
+
+/**
+ * @param {any} v
+ * @returns {string} valid effort value or ''
+ */
+export function normalizeReasoningEffort(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return REASONING_EFFORT_LEVELS.some((l) => l.value === s) ? s : '';
+}
+
+/** Built-in profile: official Grok subscription / xAI (uses grok login or XAI_API_KEY). */
 export const DEFAULT_GROK_PROFILES = [
   {
     id: 'supergrok',
-    label: 'SuperGrok (官方)',
+    label: 'Grok订阅',
     model: 'grok-build',
     baseUrl: '',
     apiKey: '',
+    reasoningEffort: '',
   },
 ];
+
+/** Legacy default labels that should be migrated to the current wording. */
+const LEGACY_OFFICIAL_LABELS = new Set([
+  'supergrok',
+  'supergrok (官方)',
+  'supergrok（官方）',
+  'grok build',
+  'grok-build (官方)',
+]);
+const LEGACY_GENERIC_TP_LABELS = new Set([
+  '第三方模型',
+  '第三方',
+  '第三方 api',
+  '第三方api',
+]);
+
+/**
+ * Pretty display name from a model id: 'gpt-5.6-luna' → 'GPT-5.6 Luna'.
+ * @param {string} model
+ */
+export function formatModelDisplayName(model) {
+  const raw = String(model || '').trim();
+  if (!raw) return '';
+  const ACRONYMS = new Set(['gpt', 'glm', 'oss', 'ai']);
+  const parts = raw.split(/[-_]+/).filter(Boolean);
+  let out = '';
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (/^\d/.test(part)) {
+      // version-ish token stays attached: GPT-5.6, GPT-4o
+      out += (out ? '-' : '') + part;
+    } else if (ACRONYMS.has(lower)) {
+      out += (out ? ' ' : '') + part.toUpperCase();
+    } else {
+      out += (out ? ' ' : '') + part.charAt(0).toUpperCase() + part.slice(1);
+    }
+  }
+  return out || raw;
+}
+
+/**
+ * Migrate old default labels: 'SuperGrok (官方)' → 'Grok订阅',
+ * generic '第三方模型' → concrete model display name.
+ * Custom user labels are left untouched.
+ * @param {{ id: string, label: string, model: string }} p
+ */
+function migrateProfileLabel(p) {
+  const label = String(p.label || '').trim();
+  if (p.id === 'supergrok') {
+    if (!label || LEGACY_OFFICIAL_LABELS.has(label.toLowerCase())) return 'Grok订阅';
+    return label;
+  }
+  if (!label || label === p.id || LEGACY_GENERIC_TP_LABELS.has(label.toLowerCase())) {
+    return formatModelDisplayName(p.model) || label || p.id;
+  }
+  return label;
+}
 
 /**
  * @param {any} raw
@@ -66,13 +149,16 @@ export function normalizeGrokProfiles(raw) {
     const id = String(p.id || '').trim() || `p_${out.length + 1}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    out.push({
+    const next = {
       id,
       label: String(p.label || p.model || id).trim() || id,
       model: String(p.model || '').trim() || 'grok-build',
       baseUrl: p.baseUrl != null ? normalizeOpenAiBaseUrl(String(p.baseUrl).trim()) : '',
       apiKey: p.apiKey != null ? String(p.apiKey) : '',
-    });
+      reasoningEffort: normalizeReasoningEffort(p.reasoningEffort),
+    };
+    next.label = migrateProfileLabel(next);
+    out.push(next);
   }
   if (!out.length) {
     return DEFAULT_GROK_PROFILES.map((p) => ({ ...p }));
@@ -145,6 +231,7 @@ export function resolveGrokRuntime(settings) {
     apiKey,
     binPath: String(s.grokBin || '~/.grok/bin/grok').trim() || '~/.grok/bin/grok',
     isThirdParty,
+    reasoningEffort: normalizeReasoningEffort(profile?.reasoningEffort),
   };
 }
 
@@ -157,6 +244,7 @@ export function grokRuntimeSignature(rt) {
     rt.model || '',
     rt.baseUrl || '',
     rt.isThirdParty ? 'tp:1' : 'tp:0',
+    `effort:${rt.reasoningEffort || ''}`,
     rt.apiKey ? 'key:1' : 'key:0',
     rt.apiKey ? simpleHash(rt.apiKey) : '',
   ].join('|');
@@ -185,13 +273,14 @@ export function tomlQuote(s) {
 
 /**
  * Isolated GROK_HOME config for a third-party OpenAI-compatible model.
- * @param {{ model: string, baseUrl: string, apiKey: string, label?: string }} opts
+ * @param {{ model: string, baseUrl: string, apiKey: string, label?: string, reasoningEffort?: string }} opts
  */
 export function buildThirdPartyConfigToml(opts) {
   const model = opts.model || 'gpt-4o-mini';
   const baseUrl = normalizeOpenAiBaseUrl(opts.baseUrl || '');
   const apiKey = opts.apiKey || '';
   const name = opts.label || model;
+  const effort = normalizeReasoningEffort(opts.reasoningEffort);
   // stream_tool_calls=false: many OpenAI-compatible gateways (e.g. dmxapi) reject
   // partial/empty tool_calls[].function.name during streaming tool assembly
   // (400: Invalid 'messages[n].tool_calls[0].function.name': empty string).
@@ -200,6 +289,7 @@ export function buildThirdPartyConfigToml(opts) {
     '[models]',
     `default = ${tomlQuote(THIRD_PARTY_MODEL_ALIAS)}`,
     'stream_tool_calls = false',
+    ...(effort ? [`default_reasoning_effort = ${tomlQuote(effort)}`] : []),
     '',
     `[model.${THIRD_PARTY_MODEL_ALIAS}]`,
     `model = ${tomlQuote(model)}`,
@@ -209,6 +299,9 @@ export function buildThirdPartyConfigToml(opts) {
     'api_backend = "chat_completions"',
     'stream_tool_calls = false',
     'context_window = 128000',
+    // Without this the CLI treats custom models as non-reasoning and drops
+    // --reasoning-effort ("model does not support reasoning effort; ignoring").
+    ...(effort ? ['supports_reasoning_effort = true'] : []),
     '',
   ].join('\n');
 }
@@ -220,6 +313,8 @@ export function buildThirdPartyConfigToml(opts) {
  * @returns {GrokSpawnPlan}
  */
 export function buildGrokSpawnPlan(rt, opts = {}) {
+  const effort = normalizeReasoningEffort(rt.reasoningEffort);
+  const effortArgs = effort ? ['--reasoning-effort', effort] : [];
   if (rt.isThirdParty && rt.baseUrl) {
     if (!rt.apiKey) {
       // still produce plan; caller should fail early with clear message
@@ -229,10 +324,11 @@ export function buildGrokSpawnPlan(rt, opts = {}) {
       baseUrl: rt.baseUrl,
       apiKey: rt.apiKey,
       label: rt.label,
+      reasoningEffort: effort,
     });
     return {
       model: THIRD_PARTY_MODEL_ALIAS,
-      args: ['agent', '-m', THIRD_PARTY_MODEL_ALIAS, 'stdio'],
+      args: ['agent', '-m', THIRD_PARTY_MODEL_ALIAS, ...effortArgs, 'stdio'],
       envPatch: {
         GROK_HOME: opts.grokHomeDir || '',
       },
@@ -250,9 +346,10 @@ export function buildGrokSpawnPlan(rt, opts = {}) {
     };
   }
 
-  // Official SuperGrok / default
+  // Official Grok subscription / default
   const args = ['agent'];
   if (rt.model) args.push('-m', rt.model);
+  args.push(...effortArgs);
   args.push('stdio');
   /** @type {Record<string, string>} */
   const envPatch = {};
@@ -268,7 +365,7 @@ export function buildGrokSpawnPlan(rt, opts = {}) {
     grokHome: null,
     configToml: null,
     isThirdParty: false,
-    label: rt.label || rt.model || 'SuperGrok',
+    label: rt.label || rt.model || 'Grok订阅',
   };
 }
 
@@ -344,6 +441,8 @@ export function applySpawnPlanEnv(baseEnv, plan) {
  */
 export function formatGrokRuntimeLabel(rt) {
   const model = rt.model || 'default';
+  const effort = normalizeReasoningEffort(rt.reasoningEffort);
+  const effortSuffix = effort ? ` · 思考:${effort}` : '';
   if (rt.baseUrl) {
     let host = rt.baseUrl;
     try {
@@ -351,9 +450,9 @@ export function formatGrokRuntimeLabel(rt) {
     } catch {
       /* keep */
     }
-    return `${rt.label || model} · ${host}`;
+    return `${rt.label || model} · ${host}${effortSuffix}`;
   }
-  return rt.label || model;
+  return `${rt.label || model}${effortSuffix}`;
 }
 
 /**

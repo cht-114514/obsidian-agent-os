@@ -2,6 +2,9 @@
  * Markdown + LaTeX helpers for chat message bodies.
  * Obsidian's MarkdownRenderer can leave `$...$` raw unless MathJax is loaded
  * and finishRenderMath runs; models also emit \( \) / \[ \] which need normalizing.
+ *
+ * MathJax output (SVG/CHTML) is not meaningfully selectable — we annotate each
+ * formula with its TeX source and rewrite clipboard on copy / dblclick.
  */
 
 /**
@@ -56,6 +59,244 @@ export function looksLikeMath(s) {
 }
 
 /**
+ * Ordered math segments from markdown (after delimiter normalize; skips fences).
+ * @param {string} markdown
+ * @returns {{ latex: string, display: boolean }[]}
+ */
+export function extractMathSegments(markdown) {
+  const md = normalizeMathDelimiters(markdown);
+  if (!md) return [];
+  const parts = md.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~)/g);
+  /** @type {{ latex: string, display: boolean }[]} */
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) continue;
+    const re = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
+    let m;
+    while ((m = re.exec(parts[i])) !== null) {
+      if (m[1] != null) out.push({ latex: String(m[1]).trim(), display: true });
+      else out.push({ latex: String(m[2] || '').trim(), display: false });
+    }
+  }
+  return out.filter((s) => s.latex);
+}
+
+/**
+ * @param {string} latex
+ * @param {boolean} display
+ */
+export function formatLatexForCopy(latex, display) {
+  const t = String(latex || '').trim();
+  if (!t) return '';
+  return display ? `$$${t}$$` : `$${t}$`;
+}
+
+/**
+ * @param {Element | null | undefined} el
+ * @returns {string}
+ */
+export function readTexAnnotation(el) {
+  if (!el?.querySelector) return '';
+  const ann =
+    el.querySelector('annotation[encoding="application/x-tex"]') ||
+    el.querySelector('annotation[encoding="TeX"]');
+  return String(ann?.textContent || '').trim();
+}
+
+/**
+ * Tag a rendered math host so selection/copy can recover TeX.
+ * @param {Element} el
+ * @param {string} latex
+ * @param {boolean} display
+ */
+export function annotateMathElement(el, latex, display) {
+  if (!el || typeof el.setAttribute !== 'function') return;
+  const src = String(latex || '').trim();
+  if (!src) return;
+  el.setAttribute('data-me-soul-latex', src);
+  el.setAttribute('data-me-soul-display', display ? '1' : '0');
+  el.setAttribute('title', '双击复制 LaTeX');
+  if (el.classList) el.classList.add('me-soul-math-copyable');
+
+  if (typeof document === 'undefined' || !el.appendChild) return;
+  el.querySelectorAll?.(':scope > .me-soul-math-copytext')?.forEach?.((n) => n.remove());
+  // Also clear non-:scope for older engines
+  Array.from(el.children || [])
+    .filter((c) => c.classList?.contains('me-soul-math-copytext'))
+    .forEach((c) => c.remove());
+
+  const span = document.createElement('span');
+  span.className = 'me-soul-math-copytext';
+  span.setAttribute('aria-hidden', 'true');
+  span.textContent = formatLatexForCopy(src, !!display);
+  el.appendChild(span);
+}
+
+/**
+ * Match rendered .math / mjx nodes to markdown segments (document order).
+ * @param {ParentNode} root
+ * @param {string} markdown
+ */
+export function annotateRenderedMath(root, markdown) {
+  if (!root?.querySelectorAll) return;
+  const segments = extractMathSegments(markdown);
+  /** @type {Element[]} */
+  let targets = Array.from(root.querySelectorAll('.math'));
+  if (!targets.length) {
+    targets = Array.from(root.querySelectorAll('mjx-container')).filter(
+      (el) => !el.parentElement?.closest?.('mjx-container, .math')
+    );
+  }
+
+  const n = Math.min(segments.length, targets.length);
+  for (let i = 0; i < n; i++) {
+    annotateMathElement(targets[i], segments[i].latex, segments[i].display);
+  }
+
+  // Fill gaps from MathML TeX annotations
+  for (const el of root.querySelectorAll('.math, mjx-container')) {
+    if (el.getAttribute?.('data-me-soul-latex')) continue;
+    const fromAnn = readTexAnnotation(el);
+    if (!fromAnn) continue;
+    const display =
+      el.classList?.contains('math-block') ||
+      el.getAttribute('display') === 'true' ||
+      el.closest?.('.math-block') != null;
+    annotateMathElement(el, fromAnn, display);
+  }
+}
+
+/**
+ * Rewrite a cloned DOM fragment so math hosts become `$latex$` text.
+ * @param {ParentNode} frag
+ * @returns {string}
+ */
+export function flattenDomLatexToText(frag) {
+  if (!frag) return '';
+  const root = /** @type {ParentNode} */ (frag);
+  root.querySelectorAll?.('.me-soul-math-copytext')?.forEach?.((n) => n.remove());
+
+  const replaceMath = (el) => {
+    if (!el?.parentNode) return;
+    const latex =
+      el.getAttribute?.('data-me-soul-latex') || readTexAnnotation(el) || '';
+    if (!latex) {
+      el.remove();
+      return;
+    }
+    const display =
+      el.getAttribute?.('data-me-soul-display') === '1' ||
+      el.classList?.contains('math-block') ||
+      el.getAttribute?.('display') === 'true';
+    el.replaceWith(
+      document.createTextNode(formatLatexForCopy(latex, display))
+    );
+  };
+
+  root.querySelectorAll?.('[data-me-soul-latex]')?.forEach?.(replaceMath);
+  root.querySelectorAll?.('.math, mjx-container')?.forEach?.(replaceMath);
+
+  return String(root.textContent || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * @param {Selection | null | undefined} sel
+ * @param {ParentNode} root
+ * @returns {string | null} plain text with LaTeX, or null to keep native copy
+ */
+export function selectionPlainWithLatex(sel, root) {
+  if (!sel || !root || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  const ancestor = range.commonAncestorContainer;
+  if (!root.contains(ancestor.nodeType === 1 ? ancestor : ancestor.parentElement)) {
+    return null;
+  }
+
+  const anchorEl =
+    (sel.anchorNode?.nodeType === 1
+      ? /** @type {Element} */ (sel.anchorNode)
+      : sel.anchorNode?.parentElement) || null;
+  const focusEl =
+    (sel.focusNode?.nodeType === 1
+      ? /** @type {Element} */ (sel.focusNode)
+      : sel.focusNode?.parentElement) || null;
+  const mathOnly =
+    anchorEl?.closest?.('[data-me-soul-latex]') ||
+    focusEl?.closest?.('[data-me-soul-latex]');
+
+  const frag = range.cloneContents();
+  const hasMath = !!(
+    frag.querySelector?.('[data-me-soul-latex], .me-soul-math-copytext, .math, mjx-container')
+  );
+
+  if (!hasMath) {
+    if (mathOnly && root.contains(mathOnly)) {
+      return formatLatexForCopy(
+        mathOnly.getAttribute('data-me-soul-latex') || '',
+        mathOnly.getAttribute('data-me-soul-display') === '1'
+      );
+    }
+    return null;
+  }
+
+  return flattenDomLatexToText(frag);
+}
+
+/**
+ * @param {{
+ *   copyText?: (text: string) => Promise<boolean> | boolean,
+ *   onCopied?: (text: string) => void,
+ * }} [opts]
+ */
+export function wireMathCopy(root, opts = {}) {
+  if (!root || typeof root.addEventListener !== 'function') return;
+  const el = /** @type {HTMLElement} */ (root);
+  if (el.dataset?.meSoulMathCopyWired === '1') return;
+  if (el.dataset) el.dataset.meSoulMathCopyWired = '1';
+
+  el.addEventListener('copy', (ev) => {
+    try {
+      const sel = window.getSelection?.();
+      const text = selectionPlainWithLatex(sel, el);
+      if (text == null) return;
+      ev.clipboardData?.setData('text/plain', text);
+      ev.preventDefault();
+    } catch {
+      /* native copy */
+    }
+  });
+
+  el.addEventListener('dblclick', (ev) => {
+    const host = /** @type {Element | null} */ (
+      /** @type {Element} */ (ev.target)?.closest?.('[data-me-soul-latex]')
+    );
+    if (!host || !el.contains(host)) return;
+    ev.preventDefault();
+    const text = formatLatexForCopy(
+      host.getAttribute('data-me-soul-latex') || '',
+      host.getAttribute('data-me-soul-display') === '1'
+    );
+    if (!text) return;
+    void (async () => {
+      let ok = false;
+      try {
+        if (opts.copyText) ok = !!(await opts.copyText(text));
+        else if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch {
+        ok = false;
+      }
+      if (ok) opts.onCopied?.(text);
+    })();
+  });
+}
+
+/**
  * Render markdown into el with MathJax support.
  *
  * @param {{
@@ -68,6 +309,8 @@ export function looksLikeMath(s) {
  *   loadMathJax?: () => Promise<void>,
  *   finishRenderMath?: () => Promise<void>,
  *   renderMath?: (source: string, display: boolean) => HTMLElement,
+ *   copyText?: (text: string) => Promise<boolean> | boolean,
+ *   onCopied?: (text: string) => void,
  * }} opts
  */
 export async function renderMarkdownWithMath(opts) {
@@ -81,6 +324,8 @@ export async function renderMarkdownWithMath(opts) {
     loadMathJax,
     finishRenderMath,
     renderMath,
+    copyText,
+    onCopied,
   } = opts;
 
   const md = normalizeMathDelimiters(markdown);
@@ -150,6 +395,14 @@ export async function renderMarkdownWithMath(opts) {
     }
   } catch {
     /* */
+  }
+
+  // Attach TeX sources so copy/selection yields `$...$` instead of empty SVG
+  try {
+    annotateRenderedMath(el, md);
+    wireMathCopy(el, { copyText, onCopied });
+  } catch {
+    /* non-fatal */
   }
 }
 
@@ -240,15 +493,16 @@ export function splitTextToMathFrag(text, renderMath) {
       const mathEl = renderMath(p.value, !!p.display);
       if (mathEl) {
         // Obsidian wraps with .math.math-inline / .math.math-block
+        annotateMathElement(mathEl, p.value, !!p.display);
         frag.appendChild(mathEl);
       } else {
         frag.appendChild(
-          document.createTextNode(p.display ? `$$${p.value}$$` : `$${p.value}$`)
+          document.createTextNode(formatLatexForCopy(p.value, !!p.display))
         );
       }
     } catch {
       frag.appendChild(
-        document.createTextNode(p.display ? `$$${p.value}$$` : `$${p.value}$`)
+        document.createTextNode(formatLatexForCopy(p.value, !!p.display))
       );
     }
   }

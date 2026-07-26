@@ -64,6 +64,7 @@ export class GrokAcpClient {
    *   isThirdParty?: boolean,
    *   label?: string,
    *   profileId?: string,
+   *   reasoningEffort?: string,
    *   env?: Record<string, string>,
    *   onStatus?: (s: string) => void,
    *   autoApprove?: (toolCall: any, options: any[]) => string | null,
@@ -78,6 +79,7 @@ export class GrokAcpClient {
     this.isThirdParty = opts.isThirdParty != null ? !!opts.isThirdParty : !!this.baseUrl;
     this.label = opts.label || this.model || 'Grok';
     this.profileId = opts.profileId || '';
+    this.reasoningEffort = opts.reasoningEffort || '';
     this.extraEnv = opts.env || null;
     this.onStatus = opts.onStatus || (() => {});
     this.autoApprove = opts.autoApprove || (() => null);
@@ -115,6 +117,7 @@ export class GrokAcpClient {
       apiKey: this.apiKey,
       binPath: this.binPath,
       isThirdParty: this.isThirdParty,
+      reasoningEffort: this.reasoningEffort,
     };
     const invalid = validateGrokRuntime(rt);
     if (invalid) throw new Error(invalid);
@@ -127,8 +130,8 @@ export class GrokAcpClient {
     const plan = buildGrokSpawnPlan(rt, { grokHomeDir });
     this.onStatus(
       plan.isThirdParty
-        ? `启动内核（第三方 ${shortHost(this.baseUrl)} · ${this.model}）…`
-        : `启动内核（${this.model || 'default'}）…`
+        ? `启动内核（${this.label || this.model} · ${shortHost(this.baseUrl)}）…`
+        : `启动内核（${this.label || this.model || 'default'}）…`
     );
 
     const baseEnv =
@@ -243,7 +246,7 @@ export class GrokAcpClient {
       ) {
         msg =
           `${msg}\n\n提示：第三方接口常与流式 tool_calls 不兼容。` +
-          `插件已在第三方配置中关闭 stream_tool_calls；请切回 SuperGrok 再切回第三方（重启内核），或新开会话后再试。` +
+          `插件已在第三方配置中关闭 stream_tool_calls；请切回 Grok订阅 再切回第三方（重启内核），或新开会话后再试。` +
           `若仍失败，该模型/网关可能不支持 Agent 工具调用。`;
         // Drop poisoned session so next prompt starts clean
         this.sessionId = null;
@@ -427,7 +430,7 @@ export class GrokAcpClient {
 
 /**
  * Write isolated GROK_HOME with third-party model config.
- * @param {{ model: string, baseUrl: string, apiKey: string, label?: string }} rt
+ * @param {{ model: string, baseUrl: string, apiKey: string, label?: string, reasoningEffort?: string }} rt
  * @returns {string}
  */
 export function prepareThirdPartyGrokHome(rt) {
@@ -447,6 +450,7 @@ export function prepareThirdPartyGrokHome(rt) {
     baseUrl: rt.baseUrl,
     apiKey: rt.apiKey,
     label: rt.label,
+    reasoningEffort: rt.reasoningEffort,
   });
   fs.writeFileSync(path.join(dir, 'config.toml'), toml, 'utf8');
   return dir;

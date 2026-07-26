@@ -20,6 +20,7 @@ describe('inject', () => {
       profile: '# Profile\n偏好：先诊断',
       style: '# Style\n简洁',
       retrieved: [{ path: 'agent-inbox/wiki/sources/a.md', title: 'A', excerpt: '高考数学' }],
+      conversation: '### 用户\n变式1怎么做\n\n### 助手\n先配对再裂项。',
       userMessage: '北京高考数学难在哪？',
     });
     assert.match(p, /## IDENTITY/);
@@ -28,6 +29,9 @@ describe('inject', () => {
     assert.match(p, /## STYLE/);
     assert.match(p, /相关记忆/);
     assert.match(p, /高考数学/);
+    assert.match(p, /本会话最近对话/);
+    assert.match(p, /先配对再裂项/);
+    assert.match(p, /不要转而搜索 vault/);
     assert.match(p, /用户本轮消息/);
     assert.match(p, /北京高考数学难在哪/);
   });

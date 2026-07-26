@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   normalizeMathDelimiters,
   looksLikeMath,
+  extractMathSegments,
+  formatLatexForCopy,
 } from '../src/markdown-render.js';
 
 describe('normalizeMathDelimiters', () => {
@@ -42,5 +44,25 @@ describe('looksLikeMath', () => {
     assert.equal(looksLikeMath('$a$'), true);
     assert.equal(looksLikeMath('\\(a\\)'), true);
     assert.equal(looksLikeMath('\\begin{matrix}1\\end{matrix}'), true);
+  });
+});
+
+describe('extractMathSegments + formatLatexForCopy', () => {
+  it('extracts inline and display in order', () => {
+    const segs = extractMathSegments('见 $a^2$ 与 $$\\frac{1}{2}$$ 完');
+    assert.deepEqual(segs, [
+      { latex: 'a^2', display: false },
+      { latex: '\\frac{1}{2}', display: true },
+    ]);
+  });
+
+  it('skips fenced code math-looking strings', () => {
+    const segs = extractMathSegments('```\n$a$\n```\n真 $b$');
+    assert.deepEqual(segs, [{ latex: 'b', display: false }]);
+  });
+
+  it('formats delimiters for clipboard', () => {
+    assert.equal(formatLatexForCopy('a^2', false), '$a^2$');
+    assert.equal(formatLatexForCopy('a+b', true), '$$a+b$$');
   });
 });

@@ -57,6 +57,7 @@ function escapeReg(s) {
  *   style?: string,
  *   constitution?: string,
  *   retrieved?: { path: string, title?: string, excerpt: string }[],
+ *   conversation?: string,
  *   userMessage: string,
  *   caps?: Partial<typeof DEFAULT_CAPS>,
  * }} pack
@@ -105,6 +106,14 @@ export function buildTurnPrompt(pack) {
     });
   } else {
     parts.push('\n## 相关记忆\n（本轮无检索命中或已跳过）\n');
+  }
+
+  if (pack.conversation) {
+    parts.push('\n## 本会话最近对话（用于承接“这题 / 刚才 / 这个裂项”等指代）\n');
+    parts.push(String(pack.conversation));
+    parts.push(
+      '\n先依据本会话对话理解指代和追问。对话中已有足够信息时，不要转而搜索 vault。'
+    );
   }
 
   parts.push('\n## 用户本轮消息\n');

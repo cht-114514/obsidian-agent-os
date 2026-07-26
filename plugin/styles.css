@@ -881,6 +881,32 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 
 /* ----- agent: solid opaque typeset (never theme text vars) ----- */
 
+.me-soul-msg-body,
+.me-soul-stream-text,
+.me-soul-user-text,
+.me-soul-agent .me-soul-msg-body,
+.me-soul-agent .me-soul-stream-text {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* Keep chrome unselectable so drag/click doesn't steal reply selection */
+.me-soul-chrome-top,
+.me-soul-header,
+.me-soul-msg-foot,
+.me-soul-composer .me-soul-glass {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.me-soul-composer .me-soul-input,
+.me-soul-feedback-input {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .me-soul-agent .me-soul-msg-body {
   /* Override Obsidian --p-spacing so paragraphs don't get theme-wide gaps */
   --p-spacing: 0.45em;
@@ -890,6 +916,14 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   letter-spacing: -0.003em;
   color: var(--ms-ink) !important;
   opacity: 1 !important;
+  -webkit-text-fill-color: var(--ms-ink);
+}
+
+/* Forced fill-color can hide the native selection highlight — restore it */
+.me-soul-agent .me-soul-msg-body::selection,
+.me-soul-agent .me-soul-msg-body *::selection {
+  background: color-mix(in srgb, var(--ms-accent) 32%, transparent);
+  color: var(--ms-ink);
   -webkit-text-fill-color: var(--ms-ink);
 }
 
@@ -919,6 +953,33 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 .me-soul-agent .me-soul-msg-body .math,
 .me-soul-agent .me-soul-msg-body mjx-container {
   font-size: 1.05em;
+}
+
+/* MathJax glyphs aren't copyable — we rewrite clipboard to TeX source */
+.me-soul-math-copyable,
+.me-soul-msg-body .math,
+.me-soul-msg-body mjx-container,
+.me-soul-md .math,
+.me-soul-md mjx-container {
+  cursor: copy;
+  position: relative;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.me-soul-math-copytext {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  user-select: text;
+  -webkit-user-select: text;
+  pointer-events: none;
 }
 
 .me-soul-agent .me-soul-msg-body .math-block,
@@ -2388,6 +2449,9 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   overflow: hidden !important;
   display: flex !important;
   flex-direction: column !important;
+  /* Custom ItemView must opt in — Obsidian/theme defaults often block select */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .me-soul-view-content .me-soul-panel,
@@ -2741,6 +2805,123 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   cursor: not-allowed;
 }
 
+.me-soul-cmdbar-session-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.me-soul-cmdbar-session-btn {
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--ms-line);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--ms-ink-secondary);
+  cursor: pointer;
+  outline: none;
+}
+
+.me-soul-cmdbar-session-btn:hover,
+.me-soul-cmdbar-session-btn:focus {
+  border-color: var(--ms-accent-line);
+  color: var(--ms-ink);
+}
+
+.me-soul-cmdbar-session-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.me-soul-cmdbar-session-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  max-width: min(320px, 70vw);
+  max-height: min(50vh, 360px);
+  overflow: auto;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--ms-line);
+  background: var(--ms-glass-fill, rgba(255, 255, 255, 0.96));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+  pointer-events: auto;
+}
+
+.me-soul-cmdbar-session-menu.is-open {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.me-soul-cmdbar-session-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--ms-line);
+}
+
+.me-soul-cmdbar-session-empty {
+  padding: 12px 10px;
+  font-size: 12px;
+  color: var(--ms-muted);
+  text-align: center;
+}
+
+.me-soul-cmdbar-session-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--ms-ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.me-soul-cmdbar-session-item:hover:not(:disabled) {
+  background: var(--ms-accent-soft, rgba(139, 92, 246, 0.12));
+}
+
+.me-soul-cmdbar-session-item.is-action {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ms-accent, #8b5cf6);
+}
+
+.me-soul-cmdbar-session-item.is-current,
+.me-soul-cmdbar-session-item:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.me-soul-cmdbar-session-item-title {
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.me-soul-cmdbar-session-item-meta {
+  font-size: 10px;
+  color: var(--ms-muted);
+  margin-top: 2px;
+}
+
+.theme-dark .me-soul-cmdbar-session-btn,
+.theme-dark .me-soul-cmdbar-session-menu {
+  background: rgba(28, 28, 32, 0.94);
+  color: #e8e8ed;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
 .me-soul-cmdbar-status {
   font-size: 11px;
   color: var(--ms-muted);
@@ -2767,6 +2948,25 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 }
 
 .me-soul-cmdbar-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--ms-ink);
+}
+
+.me-soul-cmdbar-icon-btn {
+  margin-left: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ms-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.me-soul-cmdbar-icon-btn:hover {
   background: rgba(0, 0, 0, 0.06);
   color: var(--ms-ink);
 }
@@ -3139,6 +3339,45 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   outline: none;
 }
 
+.me-soul-cmdbar-result-text.me-soul-md,
+.me-soul-cmdbar-msg-text.me-soul-md {
+  white-space: normal;
+}
+
+.me-soul-cmdbar-result-text.me-soul-md p,
+.me-soul-cmdbar-msg-text.me-soul-md p {
+  margin: 0.35em 0;
+}
+
+.me-soul-cmdbar-result-text.me-soul-md p:first-child,
+.me-soul-cmdbar-msg-text.me-soul-md p:first-child {
+  margin-top: 0;
+}
+
+.me-soul-cmdbar-result-text.me-soul-md p:last-child,
+.me-soul-cmdbar-msg-text.me-soul-md p:last-child {
+  margin-bottom: 0;
+}
+
+.me-soul-cmdbar-result-text.me-soul-md mjx-container,
+.me-soul-cmdbar-msg-text.me-soul-md mjx-container,
+.me-soul-cmdbar-result-text.me-soul-md .math,
+.me-soul-cmdbar-msg-text.me-soul-md .math {
+  -webkit-text-fill-color: unset;
+  color: unset;
+  font-size: 1.05em;
+}
+
+.me-soul-cmdbar-result-text.me-soul-md .math-block,
+.me-soul-cmdbar-msg-text.me-soul-md .math-block,
+.me-soul-cmdbar-result-text.me-soul-md mjx-container[display='true'],
+.me-soul-cmdbar-msg-text.me-soul-md mjx-container[display='true'] {
+  display: block;
+  margin: 0.45em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
 .me-soul-cmdbar-result-text:focus {
   /* subtle so keyboard users know the block is focused for copy */
   box-shadow: inset 0 0 0 1px var(--ms-accent-line);
@@ -3277,4 +3516,210 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
 .theme-dark .me-soul-sel-chip {
   background: rgba(40, 40, 46, 0.92);
   color: #c4b5fd;
+}
+
+/* ============================================================
+   Agent Live voice shell — full-viewport border (no mic popup)
+   ============================================================ */
+
+.me-soul-live-root {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: none;
+  pointer-events: none;
+  --ms-live-glow: rgba(139, 92, 246, 0.55);
+  --ms-live-glow-soft: rgba(139, 92, 246, 0.22);
+}
+
+.me-soul-live-root.is-listening,
+.me-soul-live-root.is-thinking,
+.me-soul-live-root.is-handing-off {
+  display: block;
+}
+
+.me-soul-live-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  box-shadow: inset 0 0 0 0 transparent;
+  transition: box-shadow 0.25s ease;
+}
+
+.me-soul-live-root.is-listening .me-soul-live-frame {
+  animation: me-soul-live-listen 1.8s ease-in-out infinite;
+}
+
+.me-soul-live-root.is-handing-off .me-soul-live-frame,
+.me-soul-live-root.is-thinking .me-soul-live-frame {
+  animation: me-soul-live-think 2.4s ease-in-out infinite;
+}
+
+@keyframes me-soul-live-listen {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 3px var(--ms-live-glow-soft),
+      inset 0 0 28px 2px rgba(139, 92, 246, 0.14),
+      inset 0 0 60px 0 rgba(139, 92, 246, 0.06);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 4px var(--ms-live-glow),
+      inset 0 0 40px 4px rgba(139, 92, 246, 0.28),
+      inset 0 0 80px 2px rgba(167, 139, 250, 0.12);
+  }
+}
+
+@keyframes me-soul-live-think {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 2px rgba(99, 102, 241, 0.28),
+      inset 0 0 24px 2px rgba(99, 102, 241, 0.1);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 3px rgba(129, 140, 248, 0.5),
+      inset 0 0 36px 3px rgba(99, 102, 241, 0.2);
+  }
+}
+
+.theme-dark .me-soul-live-root {
+  --ms-live-glow: rgba(167, 139, 250, 0.65);
+  --ms-live-glow-soft: rgba(167, 139, 250, 0.3);
+}
+
+/* History panel (fullscreen / home chat) */
+.me-soul-history-panel {
+  position: absolute;
+  inset: 12% 8% auto;
+  z-index: 40;
+  max-height: min(70vh, 520px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  border: 1px solid var(--ms-line, rgba(0, 0, 0, 0.08));
+  background: var(--ms-glass-fill, rgba(255, 255, 255, 0.92));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+
+.me-soul-history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ms-line, rgba(0, 0, 0, 0.08));
+}
+
+.me-soul-history-title {
+  font-size: 14px;
+  font-weight: 650;
+  flex: 1;
+}
+
+.me-soul-history-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ms-muted, #6b6b70);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.me-soul-history-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.me-soul-history-list {
+  overflow: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.me-soul-history-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--ms-muted, #6b6b70);
+  font-size: 13px;
+}
+
+.me-soul-history-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.me-soul-history-item.is-current {
+  border-color: rgba(139, 92, 246, 0.28);
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.me-soul-history-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.me-soul-history-item-title {
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.me-soul-history-item-meta {
+  font-size: 11px;
+  color: var(--ms-muted, #6b6b70);
+  margin-top: 2px;
+}
+
+.me-soul-history-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.me-soul-history-action {
+  border: 1px solid var(--ms-line, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  color: var(--ms-ink, #1c1c1e);
+}
+
+.me-soul-history-action:hover {
+  border-color: rgba(139, 92, 246, 0.35);
+}
+
+.me-soul-history-action.is-danger {
+  color: #b42318;
+}
+
+.theme-dark .me-soul-history-panel {
+  background: rgba(28, 28, 32, 0.94);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.theme-dark .me-soul-history-item {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.theme-dark .me-soul-history-action {
+  background: rgba(40, 40, 46, 0.9);
+  color: #e8e8ed;
+  border-color: rgba(255, 255, 255, 0.1);
 }

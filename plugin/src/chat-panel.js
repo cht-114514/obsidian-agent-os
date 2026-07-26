@@ -46,10 +46,17 @@ import {
   loadSessionFromVault,
   rotateSession,
   saveSessionToVault,
+  listArchivedSessions,
+  deleteSessionFile,
+  restoreArchivedSession,
+  formatRecentConversation,
+  SESSION_PATH,
 } from './chat-history.js';
 import {
+  REASONING_EFFORT_LEVELS,
   formatGrokRuntimeLabel,
   normalizeGrokProfiles,
+  normalizeReasoningEffort,
   resolveGrokRuntime,
 } from './grok-runtime.js';
 import {
@@ -165,7 +172,16 @@ export function mountMeSoulChat(containerEl, ctx) {
     cls: 'me-soul-model-select me-soul-model-select--header',
     attr: {
       'aria-label': '切换模型',
-      title: '切换 Grok Build 模型 / 第三方 API',
+      title: '切换模型（Grok订阅 / 第三方）',
+    },
+  });
+
+  // Reasoning effort — applies to the active profile
+  const effortSelect = tools.createEl('select', {
+    cls: 'me-soul-model-select me-soul-effort-select--header',
+    attr: {
+      'aria-label': '思考等级',
+      title: '思考等级（reasoning effort，下一条消息生效）',
     },
   });
 
@@ -184,7 +200,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       type: 'button',
       'aria-label': '更多',
       'aria-expanded': 'false',
-      title: '会话 · 安静 · 牵挂',
+      title: '会话 · 历史 · 安静 · 牵挂',
     },
     text: '···',
   });
@@ -204,12 +220,184 @@ export function mountMeSoulChat(containerEl, ctx) {
     attr: { type: 'button', role: 'menuitem' },
     text: '新会话',
   });
+  const histBtn = menuActions.createEl('button', {
+    cls: 'me-soul-menu-item',
+    attr: { type: 'button', role: 'menuitem' },
+    text: '历史会话',
+  });
   const quietBtn = menuActions.createEl('button', {
     cls: 'me-soul-menu-item',
     attr: { type: 'button', role: 'menuitem' },
     text: controller.settings.quiet ? '今日少说话 · 开' : '今日少说话 · 关',
   });
   quietBtn.toggleClass('is-on', !!controller.settings.quiet);
+
+  /** @type {HTMLElement | null} */
+  let historyPanel = null;
+
+  function closeHistoryPanel() {
+    if (historyPanel) {
+      historyPanel.remove();
+      historyPanel = null;
+    }
+  }
+
+  function formatHistTime(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch {
+      return '';
+    }
+  }
+
+  async function reloadChatFromSession(session) {
+    chatSession = session;
+    logEl.empty();
+    if (!chatSession.messages?.length) {
+      appendWelcome();
+      return;
+    }
+    for (const m of chatSession.messages) {
+      if (m.role === 'user') {
+        appendUser(m.text || '', m.chips || [], m.skill || null, { persist: false });
+      } else if (m.role === 'agent') {
+        await appendAgentFromHistory(m);
+      }
+    }
+    scrollDown();
+  }
+
+  async function openHistoryPanel() {
+    closeHistoryPanel();
+    const panel = shell.createDiv({
+      cls: 'me-soul-history-panel',
+      attr: { role: 'dialog', 'aria-label': '历史会话' },
+    });
+    historyPanel = panel;
+
+    const head = panel.createDiv({ cls: 'me-soul-history-head' });
+    head.createSpan({ cls: 'me-soul-history-title', text: '历史会话' });
+    const closeH = head.createEl('button', {
+      cls: 'me-soul-history-close',
+      attr: { type: 'button', 'aria-label': '关闭' },
+      text: '×',
+    });
+    closeH.onclick = () => closeHistoryPanel();
+
+    const list = panel.createDiv({ cls: 'me-soul-history-list' });
+    list.createDiv({ cls: 'me-soul-history-empty', text: '加载中…' });
+
+    async function paintList() {
+      list.empty();
+      /** @type {Array<{ path: string, id: string, updatedAt: string, messageCount: number, title: string, isCurrent?: boolean }>} */
+      const rows = [];
+      try {
+        const cur = await loadSessionFromVault(app);
+        rows.push({ ...summarizeCurrent(cur), isCurrent: true });
+      } catch {
+        /* */
+      }
+      try {
+        const archived = await listArchivedSessions(app);
+        for (const a of archived) rows.push({ ...a, isCurrent: false });
+      } catch (e) {
+        console.warn('list archives failed', e);
+      }
+
+      if (!rows.length) {
+        list.createDiv({
+          cls: 'me-soul-history-empty',
+          text: '暂无会话记录',
+        });
+        return;
+      }
+
+      for (const row of rows) {
+        const item = list.createDiv({
+          cls: 'me-soul-history-item' + (row.isCurrent ? ' is-current' : ''),
+        });
+        const main = item.createDiv({ cls: 'me-soul-history-item-main' });
+        main.createDiv({
+          cls: 'me-soul-history-item-title',
+          text: row.isCurrent ? `当前 · ${row.title}` : row.title,
+        });
+        main.createDiv({
+          cls: 'me-soul-history-item-meta',
+          text: `${row.messageCount} 条 · ${formatHistTime(row.updatedAt)}`,
+        });
+
+        const actions = item.createDiv({ cls: 'me-soul-history-item-actions' });
+        if (!row.isCurrent) {
+          const loadBtn = actions.createEl('button', {
+            cls: 'me-soul-history-action',
+            attr: { type: 'button' },
+            text: '加载',
+          });
+          loadBtn.onclick = async () => {
+            try {
+              plugin.acp?.resetSession?.();
+              const next = await restoreArchivedSession(app, row.path, chatSession);
+              await reloadChatFromSession(next);
+              closeHistoryPanel();
+              notify('已加载历史会话');
+            } catch (e) {
+              notify(e?.message || '加载失败');
+            }
+          };
+        }
+
+        const delBtn = actions.createEl('button', {
+          cls: 'me-soul-history-action is-danger',
+          attr: { type: 'button' },
+          text: '删除',
+        });
+        delBtn.onclick = async () => {
+          const ok = window.confirm(
+            row.isCurrent
+              ? '删除当前会话？内容将清空（不会进入归档）。'
+              : `删除归档「${row.title}」？此操作不可恢复。`
+          );
+          if (!ok) return;
+          try {
+            if (row.isCurrent) {
+              plugin.acp?.resetSession?.();
+              const empty = createEmptySession();
+              await saveSessionToVault(app, empty);
+              await reloadChatFromSession(empty);
+              notify('当前会话已删除');
+            } else {
+              await deleteSessionFile(app, row.path);
+              notify('归档已删除');
+            }
+            await paintList();
+          } catch (e) {
+            notify(e?.message || '删除失败');
+          }
+        };
+      }
+    }
+
+    function summarizeCurrent(cur) {
+      const firstUser = (cur.messages || []).find((m) => m.role === 'user');
+      const title = String(firstUser?.text || '空会话')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 48);
+      return {
+        path: SESSION_PATH,
+        id: cur.id || '',
+        updatedAt: cur.updatedAt || '',
+        messageCount: (cur.messages || []).length,
+        title: title || '空会话',
+      };
+    }
+
+    await paintList();
+  }
 
   function setMoreOpen(open) {
     moreMenu.toggleClass('is-open', open);
@@ -243,6 +431,7 @@ export function mountMeSoulChat(containerEl, ctx) {
   };
   newBtn.onclick = async () => {
     setMoreOpen(false);
+    closeHistoryPanel();
     plugin.acp?.resetSession?.();
     try {
       chatSession = await rotateSession(app, chatSession);
@@ -254,8 +443,13 @@ export function mountMeSoulChat(containerEl, ctx) {
     appendWelcome();
     notify('新会话已开启（上一会话已归档）');
   };
+  histBtn.onclick = () => {
+    setMoreOpen(false);
+    void openHistoryPanel();
+  };
   careMenuBtn.onclick = () => {
     setMoreOpen(false);
+    closeHistoryPanel();
     const f = app.vault.getAbstractFileByPath('agent-inbox/soul/pending-care.md');
     if (f) app.workspace.getLeaf(false).openFile(f);
     else notify('暂无牵挂文件');
@@ -342,11 +536,24 @@ export function mountMeSoulChat(containerEl, ctx) {
   };
   document.addEventListener('pointerdown', onDocContext, true);
 
+  /**
+   * Avoid no-op DOM writes — setText on chrome clears window.getSelection()
+   * and blocks copying reply text (same pitfall as command-bar).
+   * @param {HTMLElement | null | undefined} el
+   * @param {string} next
+   */
+  function setTextIfChanged(el, next) {
+    if (!el) return;
+    const s = String(next ?? '');
+    if (el.textContent === s) return;
+    el.setText(s);
+  }
+
   function paintContextStrip() {
     if (!activeNoteEnabled()) {
       contextStrip.addClass('is-disabled');
-      contextModeTag.setText('关');
-      contextPathEl.setText('设置中已关闭');
+      setTextIfChanged(contextModeTag, '关');
+      setTextIfChanged(contextPathEl, '设置中已关闭');
       btnFollow.removeClass('is-on');
       btnPin.removeClass('is-on');
       btnOff.addClass('is-on');
@@ -359,20 +566,24 @@ export function mountMeSoulChat(containerEl, ctx) {
     btnPin.toggleClass('is-on', noteMode === 'pin');
     btnOff.toggleClass('is-on', noteMode === 'off');
     if (noteMode === 'off') {
-      contextModeTag.setText('关');
-      contextPathEl.setText('不附带笔记');
+      setTextIfChanged(contextModeTag, '关');
+      setTextIfChanged(contextPathEl, '不附带笔记');
       contextStrip.removeClass('has-note');
       return;
     }
-    contextModeTag.setText(noteMode === 'pin' ? '固定' : '自动');
+    setTextIfChanged(contextModeTag, noteMode === 'pin' ? '固定' : '自动');
     if (path) {
-      contextPathEl.setText(shortName(path));
+      const short = shortName(path);
+      const pathChanged = contextPathEl.textContent !== short;
+      setTextIfChanged(contextPathEl, short);
       contextChip.setAttr('title', path);
       contextStrip.addClass('has-note');
-      contextStrip.addClass('is-flash');
-      window.setTimeout(() => contextStrip.removeClass('is-flash'), 280);
+      if (pathChanged) {
+        contextStrip.addClass('is-flash');
+        window.setTimeout(() => contextStrip.removeClass('is-flash'), 280);
+      }
     } else {
-      contextPathEl.setText('打开一篇笔记');
+      setTextIfChanged(contextPathEl, '打开一篇笔记');
       contextStrip.removeClass('has-note');
     }
   }
@@ -480,7 +691,7 @@ export function mountMeSoulChat(containerEl, ctx) {
     cls: 'me-soul-model-select me-soul-model-select--composer',
     attr: {
       'aria-label': '切换模型',
-      title: '切换 Grok Build 模型 / 第三方 API',
+      title: '切换模型（Grok订阅 / 第三方）',
     },
   });
   const micBtn = actionsEl.createEl('button', {
@@ -541,9 +752,26 @@ export function mountMeSoulChat(containerEl, ctx) {
     sel.setAttr('title', `当前：${label}`);
   }
 
+  function fillEffortSelect(sel) {
+    if (!sel) return;
+    const profiles = normalizeGrokProfiles(plugin.settings.grokProfiles);
+    const activeId = plugin.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
+    const p = profiles.find((x) => x.id === activeId) || profiles[0];
+    const current = normalizeReasoningEffort(p?.reasoningEffort);
+    sel.empty();
+    for (const l of REASONING_EFFORT_LEVELS) {
+      const opt = sel.createEl('option', {
+        text: l.value ? `思考:${l.value}` : '思考:默认',
+        attr: { value: l.value },
+      });
+      if (l.value === current) opt.selected = true;
+    }
+  }
+
   function refreshModelSelect() {
     fillModelSelect(modelSelect);
     fillModelSelect(modelSelectComposer);
+    fillEffortSelect(effortSelect);
   }
   refreshModelSelect();
 
@@ -579,17 +807,41 @@ export function mountMeSoulChat(containerEl, ctx) {
   modelSelect.onchange = () => onModelChange(modelSelect);
   modelSelectComposer.onchange = () => onModelChange(modelSelectComposer);
 
+  async function onEffortChange() {
+    const v = effortSelect.value;
+    if (busy) {
+      notify('请等当前回复结束后再调整思考等级');
+      refreshModelSelect();
+      return;
+    }
+    try {
+      const rt = await plugin.setGrokReasoningEffort(v);
+      try {
+        plugin.acp?.resetSession?.();
+      } catch {
+        /* */
+      }
+      refreshModelSelect();
+      notify(`思考等级 → ${v || '默认'}（下一条消息生效）`);
+      setStatus(`模型：${formatGrokRuntimeLabel(rt)}`);
+    } catch (e) {
+      notify(e?.message || String(e));
+      refreshModelSelect();
+    }
+  }
+  effortSelect.onchange = () => onEffortChange();
+
   /** @type {VoiceInputSession | null} */
   let voiceSession = null;
   let voiceBaseText = '';
   let voiceListening = false;
 
   function setStatus(t) {
-    statusEl.setText(t);
+    setTextIfChanged(statusEl, t);
   }
   function setHint(t) {
     const text = String(t || '').trim();
-    hintEl.setText(text);
+    setTextIfChanged(hintEl, text);
     hintEl.toggleClass('is-empty', !text);
   }
   function setBusy(b) {
@@ -1024,6 +1276,8 @@ export function mountMeSoulChat(containerEl, ctx) {
         loadMathJax,
         finishRenderMath,
         renderMath,
+        copyText: copyTextToClipboard,
+        onCopied: () => notify('已复制 LaTeX'),
       });
     } catch {
       el.empty();
@@ -1385,9 +1639,43 @@ export function mountMeSoulChat(containerEl, ctx) {
     };
 
     copy.onclick = async () => {
-      await navigator.clipboard.writeText(fullText || '');
-      notify('已复制');
+      const ok = await copyTextToClipboard(fullText || '');
+      notify(ok ? '已复制' : '复制失败');
     };
+  }
+
+  /**
+   * Clipboard helper — navigator.clipboard can fail in Electron/ItemView;
+   * fall back to a transient textarea + execCommand.
+   * @param {string} text
+   * @returns {Promise<boolean>}
+   */
+  async function copyTextToClipboard(text) {
+    const t = String(text ?? '');
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(t);
+        return true;
+      }
+    } catch {
+      /* fall through */
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return !!ok;
+    } catch {
+      return false;
+    }
   }
 
   // ---------- send ----------
@@ -1458,7 +1746,17 @@ export function mountMeSoulChat(containerEl, ctx) {
   async function runChatFlow(text, usedChips) {
     const { chips: loaded, maxChars } = await loadChipContents(usedChips);
     const composed = composeWithContext(text, loaded, { maxChars });
-    const fullPrompt = await assembleMemoryPrompt(app, plugin, composed, text, usedChips);
+    const conversation = formatRecentConversation(chatSession, {
+      currentUserText: text,
+    });
+    const fullPrompt = await assembleMemoryPrompt(
+      app,
+      plugin,
+      composed,
+      text,
+      usedChips,
+      conversation
+    );
 
     if (plugin.settings.engine === 'openclaw') {
       // legacy gateway path — still inject soul pack into text
@@ -1713,6 +2011,7 @@ export function mountMeSoulChat(containerEl, ctx) {
 
   return {
     refreshCare,
+    reloadSession: restoreOrWelcome,
     destroy() {
       if (persistTimer) {
         clearTimeout(persistTimer);
@@ -1739,6 +2038,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       } catch {
         /* */
       }
+      closeHistoryPanel();
       try {
         chromeRo?.disconnect?.();
       } catch {
@@ -1851,7 +2151,14 @@ async function ensureFolder(app, dir) {
  * Force-inject soul pack + optional wiki retrieval before every model call.
  * Module-level: must receive app/plugin (not closed over mount scope).
  */
-async function assembleMemoryPrompt(app, plugin, composedUser, rawText, usedChips) {
+async function assembleMemoryPrompt(
+  app,
+  plugin,
+  composedUser,
+  rawText,
+  usedChips,
+  conversation = ''
+) {
   const readFile = async (rel) => vaultRead(app, rel);
   const pack = await loadSoulPack(readFile);
   let retrieved = [];
@@ -1873,6 +2180,7 @@ async function assembleMemoryPrompt(app, plugin, composedUser, rawText, usedChip
     style: pack.style || '',
     constitution: pack.constitution || '',
     retrieved,
+    conversation,
     userMessage: composedUser,
   });
 }

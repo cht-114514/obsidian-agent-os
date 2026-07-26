@@ -8,6 +8,8 @@ import {
   buildGrokSpawnPlan,
   buildThirdPartyConfigToml,
   normalizeOpenAiBaseUrl,
+  normalizeReasoningEffort,
+  formatModelDisplayName,
   grokRuntimeSignature,
   formatGrokRuntimeLabel,
   validateGrokRuntime,
@@ -187,6 +189,129 @@ describe('grok-runtime', () => {
       grokProfiles: [{ ...DEFAULT_GROK_PROFILES[0], model: 'other' }],
     });
     assert.notEqual(grokRuntimeSignature(a), grokRuntimeSignature(b));
+  });
+
+  it('default supergrok profile is labeled Grok订阅', () => {
+    assert.equal(DEFAULT_GROK_PROFILES[0].label, 'Grok订阅');
+    const p = normalizeGrokProfiles([
+      { id: 'supergrok', label: 'SuperGrok (官方)', model: 'grok-build' },
+    ]);
+    assert.equal(p[0].label, 'Grok订阅');
+  });
+
+  it('generic 第三方模型 label migrates to concrete model name', () => {
+    const p = normalizeGrokProfiles([
+      { id: 'supergrok', label: 'Grok订阅', model: 'grok-build' },
+      {
+        id: 'p_x',
+        label: '第三方模型',
+        model: 'gpt-5.6-luna',
+        baseUrl: 'https://www.dmxapi.cn/v1',
+        apiKey: 'sk-x',
+      },
+    ]);
+    assert.equal(p.find((x) => x.id === 'p_x')?.label, 'GPT-5.6 Luna');
+  });
+
+  it('custom user labels are preserved', () => {
+    const p = normalizeGrokProfiles([
+      { id: 'p_y', label: '我的便宜模型', model: 'gpt-4o-mini', baseUrl: 'https://x/v1' },
+    ]);
+    assert.equal(p.find((x) => x.id === 'p_y')?.label, '我的便宜模型');
+  });
+
+  it('formatModelDisplayName prettifies model ids', () => {
+    assert.equal(formatModelDisplayName('gpt-5.6-luna'), 'GPT-5.6 Luna');
+    assert.equal(formatModelDisplayName('gpt-4o-mini'), 'GPT-4o Mini');
+    assert.equal(formatModelDisplayName('grok-build'), 'Grok Build');
+  });
+
+  it('normalizeReasoningEffort accepts known levels only', () => {
+    assert.equal(normalizeReasoningEffort('high'), 'high');
+    assert.equal(normalizeReasoningEffort('HIGH'), 'high');
+    assert.equal(normalizeReasoningEffort('turbo'), '');
+    assert.equal(normalizeReasoningEffort(''), '');
+  });
+
+  it('reasoning effort flows into spawn args (official)', () => {
+    const rt = resolveGrokRuntime({
+      grokActiveProfile: 'supergrok',
+      grokProfiles: [{ ...DEFAULT_GROK_PROFILES[0], reasoningEffort: 'high' }],
+    });
+    const plan = buildGrokSpawnPlan(rt);
+    assert.deepEqual(plan.args, [
+      'agent',
+      '-m',
+      'grok-build',
+      '--reasoning-effort',
+      'high',
+      'stdio',
+    ]);
+  });
+
+  it('reasoning effort flows into spawn args + config toml (third-party)', () => {
+    const rt = resolveGrokRuntime({
+      grokActiveProfile: 'p',
+      grokProfiles: [
+        {
+          id: 'p',
+          label: 'DMX',
+          model: 'gpt-5.6-luna',
+          baseUrl: 'https://www.dmxapi.cn',
+          apiKey: 'sk-test',
+          reasoningEffort: 'medium',
+        },
+      ],
+    });
+    const plan = buildGrokSpawnPlan(rt, { grokHomeDir: '/tmp/gh' });
+    assert.deepEqual(plan.args, [
+      'agent',
+      '-m',
+      THIRD_PARTY_MODEL_ALIAS,
+      '--reasoning-effort',
+      'medium',
+      'stdio',
+    ]);
+    assert.match(plan.configToml || '', /default_reasoning_effort = "medium"/);
+    assert.match(plan.configToml || '', /supports_reasoning_effort = true/);
+  });
+
+  it('no reasoning effort → no flag, no toml keys', () => {
+    const rt = resolveGrokRuntime({
+      grokActiveProfile: 'supergrok',
+      grokProfiles: DEFAULT_GROK_PROFILES,
+    });
+    const plan = buildGrokSpawnPlan(rt);
+    assert.equal(plan.args.includes('--reasoning-effort'), false);
+    const toml = buildThirdPartyConfigToml({
+      model: 'm',
+      baseUrl: 'https://x/v1',
+      apiKey: 'k',
+    });
+    assert.doesNotMatch(toml, /reasoning_effort/);
+  });
+
+  it('grokRuntimeSignature changes when reasoning effort changes', () => {
+    const a = resolveGrokRuntime({
+      grokActiveProfile: 'supergrok',
+      grokProfiles: DEFAULT_GROK_PROFILES,
+    });
+    const b = resolveGrokRuntime({
+      grokActiveProfile: 'supergrok',
+      grokProfiles: [{ ...DEFAULT_GROK_PROFILES[0], reasoningEffort: 'high' }],
+    });
+    assert.notEqual(grokRuntimeSignature(a), grokRuntimeSignature(b));
+  });
+
+  it('formatGrokRuntimeLabel appends effort when set', () => {
+    const label = formatGrokRuntimeLabel({
+      label: 'GPT-5.6 Luna',
+      model: 'gpt-5.6-luna',
+      baseUrl: 'https://www.dmxapi.cn/v1',
+      reasoningEffort: 'high',
+    });
+    assert.match(label, /GPT-5\.6 Luna/);
+    assert.match(label, /思考:high/);
   });
 
   it('formatGrokRuntimeLabel shows host for third-party', () => {

@@ -36,7 +36,8 @@ export function buildCommandBarPrompt(opts) {
   parts.push('# 任务：Obsidian 编辑器内联助手');
   parts.push('');
   parts.push('你和在 Grok Build 里一样，用**自然语言完整理解**用户在说什么。');
-  parts.push('插件**不会**用关键词猜测意图；由你判断该改笔记还是只回答。');
+  parts.push('插件**不会**用关键词猜测意图；由你判断该准备「可写入」正文还是只回答。');
+  parts.push('**重要：插件不会自动改笔记。** 即使用户要写入，也只把正文展示在悬浮窗；用户点「插入光标处 / 替换选区」后才会写入。');
   parts.push('这是可多轮的命令条会话：可参考「本会话此前对话」，以最新「用户说」为准。');
   parts.push('');
   parts.push('## 硬性约束');
@@ -52,17 +53,17 @@ export function buildCommandBarPrompt(opts) {
   parts.push('## 你如何决定（自然语言理解，不是关键词匹配）');
   parts.push(
     [
-      '读懂用户意图后，选择一种动作：',
+      '读懂用户意图后，选择一种动作（仅作声明，**不会自动执行**）：',
       '- **replace** — 用户要改写/润色/替换**当前选区**（仅当下面提供了选中文本时）',
-      '- **insert** — 用户要你写一段可放进笔记的内容（知识点、续写、起草、补过渡等）→ 插到光标处',
-      '- **show** — 用户只是提问、讨论、解释、总结，**不要**改笔记，只回答',
+      '- **insert** — 用户要你写一段可放进笔记的内容（知识点、续写、起草、补过渡等）',
+      '- **show** — 用户只是提问、讨论、解释、总结，正文是回答而非笔记草稿',
       '',
       '没有选区时不要选 replace（应选 insert 或 show）。',
       '拿不准是否写入时，选 **show**（更安全）。',
     ].join('\n')
   );
   parts.push('');
-  parts.push('## 输出格式（必须遵守，便于插件自动应用）');
+  parts.push('## 输出格式（必须遵守）');
   parts.push(
     [
       '第 1 行只能是下面之一（不要加其它字）：',
@@ -72,7 +73,7 @@ export function buildCommandBarPrompt(opts) {
       '',
       '第 2 行空行。',
       '从第 3 行起是正文：',
-      '- replace / insert：只输出要写入笔记的正文（不要「以下是…」前言）',
+      '- replace / insert：只输出可写入笔记的正文（不要「以下是…」前言）',
       '- show：正常回答即可',
       '',
       '公式可用 $...$ / $$...$$；不要用 markdown 代码围栏包住整篇正文。',
@@ -130,17 +131,24 @@ export function buildCommandBarPrompt(opts) {
 
   const history = Array.isArray(opts.history) ? opts.history : [];
   if (history.length) {
-    // Keep prompt bounded: last 6 turns (≈ 3 user/assistant pairs)
-    const recent = history.slice(-6);
-    parts.push('## 本会话此前对话（可参考；以最新「用户说」为准）');
+    // Empty failed turns must not evict meaningful context.
+    const recent = history
+      .filter((turn) => String(turn?.text || '').trim())
+      .slice(-10);
+    parts.push('## 本会话此前对话（用于承接“这题 / 刚才 / 这个裂项”等指代）');
     for (const turn of recent) {
       const role = turn?.role === 'assistant' ? '助手' : '用户';
       const text = String(turn?.text || '').trim();
-      if (!text) continue;
-      const clipped = text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+      const clipped =
+        text.length > 3200
+          ? `${text.slice(0, 2400)}\n…（中段截断）…\n${text.slice(-700)}`
+          : text;
       parts.push(`### ${role}`);
       parts.push(clipped);
     }
+    parts.push(
+      '先依据上述对话理解指代。已有足够信息时，不要转而搜索其它文件。'
+    );
     parts.push('');
   }
 

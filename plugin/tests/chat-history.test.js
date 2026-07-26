@@ -8,6 +8,10 @@ import {
   trimSession,
   MAX_MESSAGES,
   archiveStamp,
+  sessionToCmdbarTurns,
+  summarizeSession,
+  sessionContentFingerprint,
+  formatRecentConversation,
 } from '../src/chat-history.js';
 
 describe('chat-history', () => {
@@ -58,5 +62,60 @@ describe('chat-history', () => {
 
   it('archiveStamp is filename-safe', () => {
     assert.match(archiveStamp(new Date('2026-07-19T08:05:09')), /^\d{8}-\d{6}$/);
+  });
+
+  it('sessionToCmdbarTurns maps agent → assistant', () => {
+    let s = createEmptySession();
+    s = appendMessage(s, { role: 'user', text: 'hi' });
+    s = appendMessage(s, { role: 'agent', text: '**hello**' });
+    const turns = sessionToCmdbarTurns(s);
+    assert.deepEqual(turns, [
+      { role: 'user', text: 'hi' },
+      { role: 'assistant', text: '**hello**' },
+    ]);
+  });
+
+  it('summarizeSession uses first user text', () => {
+    let s = createEmptySession();
+    s = appendMessage(s, { role: 'user', text: '把公式写进笔记' });
+    s = appendMessage(s, { role: 'agent', text: '好的' });
+    const sum = summarizeSession(s, 'agent-inbox/sessions/archive/x.json');
+    assert.equal(sum.path, 'agent-inbox/sessions/archive/x.json');
+    assert.equal(sum.messageCount, 2);
+    assert.match(sum.title, /公式/);
+  });
+
+  it('sessionContentFingerprint ignores ids, matches same dialogue', () => {
+    let a = createEmptySession();
+    a = appendMessage(a, { role: 'user', text: 'hello' });
+    a = appendMessage(a, { role: 'agent', text: 'world' });
+    let b = createEmptySession();
+    b = appendMessage(b, { role: 'user', text: 'hello' });
+    b = appendMessage(b, { role: 'agent', text: 'world' });
+    assert.equal(sessionContentFingerprint(a), sessionContentFingerprint(b));
+    b = appendMessage(b, { role: 'user', text: 'more' });
+    assert.notEqual(sessionContentFingerprint(a), sessionContentFingerprint(b));
+  });
+
+  it('recent conversation keeps meaningful math context and skips empty turns', () => {
+    let s = createEmptySession();
+    s = appendMessage(s, { role: 'user', text: '变式1的思路是怎样的' });
+    s = appendMessage(s, {
+      role: 'agent',
+      text: '配对后得到 -1/((4k-1)(4k+1))，再裂项。',
+    });
+    for (let i = 0; i < 3; i++) {
+      s = appendMessage(s, { role: 'user', text: 'lie xiang' });
+      s = appendMessage(s, { role: 'agent', text: '' });
+    }
+    s = appendMessage(s, { role: 'user', text: '裂项之后好像也没法求和' });
+
+    const context = formatRecentConversation(s, {
+      currentUserText: '裂项之后好像也没法求和',
+    });
+    assert.match(context, /变式1/);
+    assert.match(context, /4k-1/);
+    assert.doesNotMatch(context, /裂项之后好像也没法求和/);
+    assert.equal((context.match(/### 助手/g) || []).length, 1);
   });
 });

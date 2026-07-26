@@ -20,11 +20,15 @@ import { GrokAcpClient, makeVaultAutoApprove } from './acp-client.js';
 import { checkWritePolicy } from './protocol-bridge.js';
 import { MeSoulSetupModal, seedVaultScaffold, needsScaffold } from './setup.js';
 import { createCommandBarController } from './command-bar.js';
+import { createVoiceLiveController } from './voice-live.js';
 import {
   DEFAULT_GROK_PROFILES,
+  REASONING_EFFORT_LEVELS,
   formatGrokRuntimeLabel,
+  formatModelDisplayName,
   grokRuntimeSignature,
   normalizeGrokProfiles,
+  normalizeReasoningEffort,
   resolveGrokRuntime,
 } from './grok-runtime.js';
 
@@ -71,6 +75,10 @@ class MeSoulView extends ItemView {
     this._mount?.destroy?.();
     this._mount = null;
   }
+
+  async reloadSession() {
+    await this._mount?.reloadSession?.();
+  }
 }
 
 /** Markdown code-block host for homepage embed */
@@ -112,11 +120,23 @@ export default class MeSoulPlugin extends Plugin {
     await this.loadSettings();
     this.controller = new MeSoulController(this.settings);
     this.acp = null;
-    this.commandBar = createCommandBarController(this.app, this, { Notice });
+    this.commandBar = createCommandBarController(this.app, this, {
+      Notice,
+      MarkdownRenderer,
+      loadMathJax,
+      renderMath,
+      finishRenderMath,
+    });
+    this.voiceLive = createVoiceLiveController(this.app, this, {
+      Notice,
+      getCommandBar: () => this.commandBar,
+    });
 
     document.body.classList.add('me-soul-plugin-loaded');
     this.register(() => document.body.classList.remove('me-soul-plugin-loaded'));
     this.register(() => {
+      this.voiceLive?.destroy?.();
+      this.voiceLive = null;
       this.commandBar?.destroy?.();
       this.commandBar = null;
     });
@@ -144,6 +164,14 @@ export default class MeSoulPlugin extends Plugin {
       id: 'obsidian-agent-os-command-bar-open',
       name: 'Open Agent command bar (force open)',
       callback: () => this.commandBar?.open({ forceOpen: true }),
+    });
+
+    // Live voice shell: border listen → hand off to command bar (text reply)
+    this.addCommand({
+      id: 'obsidian-agent-os-live-voice',
+      name: 'Toggle Agent Live voice',
+      hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'V' }],
+      callback: () => this.voiceLive?.toggle(),
     });
 
     // Full-screen chat tab (Claude / ChatGPT style)
@@ -346,6 +374,22 @@ export default class MeSoulPlugin extends Plugin {
     return this.getGrokRuntime();
   }
 
+  /**
+   * Set reasoning effort on the active profile. Restarts kernel on next prompt.
+   * @param {string} effort '' | minimal | low | medium | high | xhigh | max
+   */
+  async setGrokReasoningEffort(effort) {
+    const profiles = normalizeGrokProfiles(this.settings.grokProfiles);
+    const activeId = this.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
+    const p = profiles.find((x) => x.id === activeId) || profiles[0];
+    if (!p) throw new Error('没有可用的模型配置档');
+    p.reasoningEffort = normalizeReasoningEffort(effort);
+    this.settings.grokProfiles = profiles;
+    await this.saveSettings();
+    this.invalidateAcp();
+    return this.getGrokRuntime();
+  }
+
   /** Drop running Grok ACP so next getAcp() rebuilds with current settings. */
   invalidateAcp() {
     try {
@@ -390,6 +434,7 @@ export default class MeSoulPlugin extends Plugin {
       isThirdParty: rt.isThirdParty,
       label: rt.label,
       profileId: rt.profileId,
+      reasoningEffort: rt.reasoningEffort,
       autoApprove: makeVaultAutoApprove(
         (rel) => checkWritePolicy(rel).allowed,
         base
@@ -429,6 +474,7 @@ export default class MeSoulPlugin extends Plugin {
 
     // Prefer an existing leaf already in the main workspace
     let leaf = existing.find((l) => !isSideLeaf(l));
+    const reusedExisting = !!leaf;
 
     if (!leaf) {
       // New tab in the main split (full workspace area)
@@ -448,6 +494,10 @@ export default class MeSoulPlugin extends Plugin {
     }
 
     workspace.revealLeaf(leaf);
+    // Reused leaf keeps stale in-memory chat; reload shared current.json.
+    if (reusedExisting) {
+      await leaf.view?.reloadSession?.();
+    }
   }
 
   async loadSettings() {
@@ -727,7 +777,7 @@ class MeSoulSettingTab extends PluginSettingTab {
     {
       const body = this.section(containerEl, {
         title: '对话内核',
-        desc: '选引擎；Grok Build 可接官方 SuperGrok 或 OpenAI 兼容第三方以省额度。',
+        desc: '选引擎；Grok Build 可接 Grok订阅（官方）或 OpenAI 兼容第三方以省额度。',
         badge: '3',
       });
 
@@ -786,7 +836,7 @@ class MeSoulSettingTab extends PluginSettingTab {
         new Setting(body)
           .setName('全局 API Base URL')
           .setDesc(
-            'OpenAI 兼容根地址，须含 /v1（如 https://www.dmxapi.cn/v1）。只写域名会失败。SuperGrok 官方档不继承此项。'
+            'OpenAI 兼容根地址，须含 /v1（如 https://www.dmxapi.cn/v1）。只写域名会失败。Grok订阅（官方）档不继承此项。'
           )
           .addText((t) =>
             t
@@ -866,6 +916,22 @@ class MeSoulSettingTab extends PluginSettingTab {
             );
 
           new Setting(box)
+            .setName('思考等级')
+            .setDesc('传给 grok --reasoning-effort；模型不支持时自动忽略')
+            .addDropdown((d) => {
+              for (const l of REASONING_EFFORT_LEVELS) {
+                d.addOption(l.value, l.label);
+              }
+              d.setValue(normalizeReasoningEffort(p.reasoningEffort));
+              d.onChange(async (v) => {
+                p.reasoningEffort = normalizeReasoningEffort(v);
+                if (s.grokActiveProfile === p.id) this.plugin.invalidateAcp();
+                s.grokProfiles = normalizeGrokProfiles(profiles);
+                await this.plugin.saveSettings();
+              });
+            });
+
+          new Setting(box)
             .setName('Base URL 覆盖')
             .setDesc(
               p.id === 'supergrok'
@@ -923,14 +989,16 @@ class MeSoulSettingTab extends PluginSettingTab {
           .addButton((b) =>
             b.setButtonText('＋ 添加').onClick(async () => {
               const id = `p_${Date.now().toString(36)}`;
+              const model = 'gpt-4o-mini';
               const next = [
                 ...normalizeGrokProfiles(s.grokProfiles),
                 {
                   id,
-                  label: '第三方模型',
-                  model: 'gpt-4o-mini',
+                  label: formatModelDisplayName(model),
+                  model,
                   baseUrl: s.grokApiBaseUrl || '',
                   apiKey: '',
+                  reasoningEffort: '',
                 },
               ];
               s.grokProfiles = normalizeGrokProfiles(next);
@@ -1137,16 +1205,26 @@ class MeSoulSettingTab extends PluginSettingTab {
     {
       const body = this.section(containerEl, {
         title: '语音输入',
-        desc: '按住 🎤 说话；Key 可填 xAI，或自动读环境 / OpenClaw / ~/.grok/auth。',
+        desc: '全屏 Chat 点 🎤 听写；Cmd/Ctrl+Shift+V 进入 Live 边框听麦，说完自动送进命令条（本期文字回复，无 TTS）。Key 可填 xAI，或自动读环境 / OpenClaw / ~/.grok/auth。',
         badge: '6',
       });
 
       new Setting(body)
         .setName('启用语音')
+        .setDesc('关闭后 Live 与 Chat 麦克风均不可用')
         .addToggle((t) =>
           t.setValue(s.voiceEnabled !== false).onChange(async (v) => {
             s.voiceEnabled = v;
             await this.plugin.saveSettings();
+          })
+        );
+
+      new Setting(body)
+        .setName('Live 语音（边框听麦）')
+        .setDesc('默认快捷键 Cmd/Ctrl+Shift+V，可在「快捷键」里改绑。说完后打开命令条并自动提交。')
+        .addButton((btn) =>
+          btn.setButtonText('试一下').onClick(() => {
+            this.plugin.voiceLive?.toggle();
           })
         );
 
