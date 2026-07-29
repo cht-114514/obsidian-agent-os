@@ -12,6 +12,8 @@ import {
   summarizeSession,
   sessionContentFingerprint,
   formatRecentConversation,
+  truncateFromMessage,
+  findPrecedingUserMessage,
 } from '../src/chat-history.js';
 
 describe('chat-history', () => {
@@ -117,5 +119,28 @@ describe('chat-history', () => {
     assert.match(context, /4k-1/);
     assert.doesNotMatch(context, /裂项之后好像也没法求和/);
     assert.equal((context.match(/### 助手/g) || []).length, 1);
+  });
+
+  it('truncateFromMessage drops target and later turns', () => {
+    let s = createEmptySession();
+    s = appendMessage(s, { id: 'u1', role: 'user', text: 'q1' });
+    s = appendMessage(s, { id: 'a1', role: 'agent', text: 'a1' });
+    s = appendMessage(s, { id: 'u2', role: 'user', text: 'q2' });
+    s = appendMessage(s, { id: 'a2', role: 'agent', error: 'boom' });
+    const cut = truncateFromMessage(s, 'u2');
+    assert.equal(cut.index, 2);
+    assert.equal(cut.removed?.id, 'u2');
+    assert.deepEqual(
+      cut.session.messages.map((m) => m.id),
+      ['u1', 'a1']
+    );
+  });
+
+  it('findPrecedingUserMessage walks back from agent', () => {
+    let s = createEmptySession();
+    s = appendMessage(s, { id: 'u1', role: 'user', text: 'q1' });
+    s = appendMessage(s, { id: 'a1', role: 'agent', text: 'a1' });
+    const u = findPrecedingUserMessage(s, 'a1');
+    assert.equal(u?.id, 'u1');
   });
 });

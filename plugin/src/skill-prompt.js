@@ -9,6 +9,7 @@ export const GROK_SKILL_IDS = new Set([
   'me-reflect-feedback',
   'me-care-check',
   'me-soul-promote',
+  'me-imagine',
   'memorized',
   'me-reindex',
   'me-apply-pending',
@@ -150,6 +151,19 @@ Merge an accepted insight into agent-inbox/soul/profile.md (or paths in pending)
 3. Append a dated section to profile.md from the insight body.
 4. Optionally move draft to insights/accepted/.
 `,
+
+  'me-imagine': `# me-imagine
+
+## Goal
+Generate an image with Grok Build native image_gen (or image_edit). Do not curl xAI HTTP yourself.
+
+## Steps
+1. Resolve what to draw from **本会话此前对话** when the user says 该/这个/刚才 — do not search unrelated vault notes if the chat already defined the model.
+2. Craft / use the user's prompt; pick aspect_ratio (default 1:1).
+3. Call image_gen once (or image_edit with a reference).
+4. Tell the user the session-relative path (images/N.jpg). The Obsidian plugin copies into agent-inbox/raw/ and offers 插入当前笔记.
+5. Only write under agent-inbox/ if you copy the file yourself. Never silent-write human zones.
+`,
 };
 
 /**
@@ -180,6 +194,7 @@ export async function loadSkillMarkdown(skillId, readFile) {
  *   userText: string,
  *   contextBlock: string,
  *   activePath?: string | null,
+ *   conversation?: string,
  * }} args
  */
 export function buildGrokSkillPrompt(args) {
@@ -214,6 +229,16 @@ export function buildGrokSkillPrompt(args) {
     parts.push(`\`${args.activePath}\``);
     parts.push('');
   }
+  const conversation = String(args.conversation || '').trim();
+  if (conversation) {
+    parts.push('## 本会话此前对话（用于承接「该 / 这个 / 刚才 / 上面」等指代）');
+    parts.push(conversation);
+    parts.push('');
+    parts.push(
+      '先依据上述对话理解指代。用户说「该物理模型 / 刚才那个 / 这个图」时，优先沿用对话里已给出的题设与内容；已有足够信息时不要转去搜索其它笔记。'
+    );
+    parts.push('');
+  }
   if (args.contextBlock) {
     parts.push(args.contextBlock);
     parts.push('');
@@ -228,4 +253,19 @@ export function buildGrokSkillPrompt(args) {
  */
 export function isGrokSkill(skillId) {
   return GROK_SKILL_IDS.has(skillId);
+}
+
+/**
+ * Parse `/skill-id optional args` for command-bar → chat handoff.
+ * @param {string} text
+ * @returns {{ skillId: string, rest: string } | null}
+ */
+export function parseSlashSkillCommand(text) {
+  const m = String(text || '')
+    .trim()
+    .match(/^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/i);
+  if (!m) return null;
+  const skillId = m[1].toLowerCase();
+  if (!GROK_SKILL_IDS.has(skillId)) return null;
+  return { skillId, rest: (m[2] || '').trim() };
 }

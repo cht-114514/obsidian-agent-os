@@ -36,6 +36,7 @@ import {
   summarizeSession,
   SESSION_PATH,
 } from './chat-history.js';
+import { parseSlashSkillCommand } from './skill-prompt.js';
 
 const POSITION_KEY = 'me-soul-cmdbar-pos';
 
@@ -93,6 +94,19 @@ export function createCommandBarController(app, plugin, deps) {
   let removeSessionMenuOutside = null;
   /** @type {{ resolve: () => void, token: { aborted: boolean } } | null} */
   let pendingFullscreenOpen = null;
+  /** @type {HTMLElement | null} */
+  let skillPillEl = null;
+  /** @type {HTMLElement | null} */
+  let suggestEl = null;
+  /** @type {HTMLElement | null} */
+  let skillLiveEl = null;
+  /** @type {{ id: string, label: string } | null} */
+  let activeSkill = null;
+  /** @type {any[]} */
+  let suggestItems = [];
+  let suggestIndex = 0;
+  /** @type {'skill'|null} */
+  let suggestKind = null;
 
   let busy = false;
   /** @type {((busy: boolean) => void) | null} */
@@ -535,17 +549,67 @@ export function createCommandBarController(app, plugin, deps) {
       }
     };
 
-    // Composer at bottom — always available for follow-ups
-    inputEl = panelEl.createEl('textarea', {
+    // Composer at bottom — skills (/) + follow-ups
+    const composer = panelEl.createDiv({ cls: 'me-soul-cmdbar-composer' });
+    skillPillEl = composer.createDiv({ cls: 'me-soul-cmdbar-skill-slot' });
+    skillLiveEl = composer.createDiv({ cls: 'me-soul-cmdbar-skill-live' });
+    skillLiveEl.style.display = 'none';
+
+    inputEl = composer.createEl('textarea', {
       cls: 'me-soul-cmdbar-input',
       attr: {
         rows: '2',
-        placeholder: '改短一点 · 续写两句 · 这段在说什么…（可连续追问）',
+        placeholder: '改短一点 · 或输入 / 选用技能（如 /me-imagine）…',
         'aria-label': '指令',
       },
     });
 
+    suggestEl = composer.createDiv({ cls: 'me-soul-suggest me-soul-cmdbar-suggest' });
+    suggestEl.style.display = 'none';
+
+    inputEl.addEventListener('input', () => {
+      updateSkillSuggest();
+      updateSkillLiveHint();
+      syncComposerSkillClass();
+    });
+
     inputEl.addEventListener('keydown', (ev) => {
+      if (suggestKind && suggestItems.length) {
+        if (ev.key === 'ArrowDown') {
+          ev.preventDefault();
+          suggestIndex = (suggestIndex + 1) % suggestItems.length;
+          paintSkillSuggest();
+          return;
+        }
+        if (ev.key === 'ArrowUp') {
+          ev.preventDefault();
+          suggestIndex =
+            (suggestIndex - 1 + suggestItems.length) % suggestItems.length;
+          paintSkillSuggest();
+          return;
+        }
+        if (ev.key === 'Tab' || (ev.key === 'Enter' && !ev.shiftKey && suggestKind)) {
+          // Enter with open suggest accepts skill; Shift+Enter still newline via fallthrough only when no suggest
+          if (ev.key === 'Tab' || !ev.shiftKey) {
+            ev.preventDefault();
+            acceptSkillSuggest();
+            return;
+          }
+        }
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          closeSkillSuggest();
+          return;
+        }
+      }
+      if (ev.key === 'Backspace' && !inputEl.value && activeSkill) {
+        ev.preventDefault();
+        activeSkill = null;
+        renderSkillPill();
+        syncComposerSkillClass();
+        updateSkillLiveHint();
+        return;
+      }
       if (ev.key === 'Escape') {
         ev.preventDefault();
         ev.stopPropagation();
@@ -591,11 +655,204 @@ export function createCommandBarController(app, plugin, deps) {
     };
     row.createSpan({
       cls: 'me-soul-cmdbar-hint',
-      text: 'Enter 发送 · 可多轮 · 拖标题移动 · Esc 关闭',
+      text: 'Enter 发送 · / 技能 · 可多轮 · Esc 关闭',
     });
 
     refreshModelSelect();
     placePanel();
+    renderSkillPill();
+  }
+
+  function skillDesc(id) {
+    const map = {
+      'me-digest': '消化笔记 → 待审 wiki',
+      'me-write-insight': '沉淀心迹草案',
+      'me-reflect-feedback': '根据反馈反思记忆',
+      'me-care-check': '检查牵挂',
+      'me-soul-promote': '升格 Soul',
+      'me-imagine': 'Grok Imagine 生图并插入笔记',
+      memorized: '写入向量记忆库',
+      'me-reindex': '（别名）同 memorized',
+      'me-apply-pending': '合并已确认 pending',
+      'me-apply-insight': '合并 insight',
+    };
+    return map[id] || '技能 · 全屏 Chat 运行';
+  }
+
+  function skillCatalog() {
+    return (plugin.controller?.listSkills?.() || []).map((s) => ({
+      ...s,
+      desc: skillDesc(s.id),
+    }));
+  }
+
+  function renderSkillPill() {
+    if (!skillPillEl) return;
+    skillPillEl.empty();
+    skillPillEl.toggleClass('is-active', !!activeSkill);
+    if (!activeSkill) {
+      if (inputEl) {
+        inputEl.setAttr(
+          'placeholder',
+          '改短一点 · 或输入 / 选用技能（如 /me-imagine）…'
+        );
+      }
+      return;
+    }
+    const pill = skillPillEl.createDiv({ cls: 'me-soul-skill-active-pill' });
+    pill.createSpan({ text: activeSkill.label });
+    const meta = pill.createSpan({
+      cls: 'me-soul-cmdbar-skill-pill-desc',
+      text: skillDesc(activeSkill.id),
+    });
+    meta.setAttr('title', skillDesc(activeSkill.id));
+    const x = pill.createSpan({ cls: 'me-soul-chip-x', text: '×' });
+    x.onclick = () => {
+      activeSkill = null;
+      renderSkillPill();
+      syncComposerSkillClass();
+      updateSkillLiveHint();
+      inputEl?.focus();
+    };
+    if (inputEl) {
+      inputEl.setAttr(
+        'placeholder',
+        `为 ${activeSkill.label} 补充参数…（Enter 在全屏 Chat 运行）`
+      );
+    }
+  }
+
+  function syncComposerSkillClass() {
+    if (!inputEl) return;
+    const live = !activeSkill && !!parseSlashSkillCommand(inputEl.value || '');
+    inputEl.toggleClass('is-skill-mode', !!(activeSkill || live));
+  }
+
+  function updateSkillLiveHint() {
+    if (!skillLiveEl) return;
+    if (activeSkill) {
+      skillLiveEl.style.display = 'none';
+      skillLiveEl.empty();
+      return;
+    }
+    const parsed = parseSlashSkillCommand(inputEl?.value || '');
+    if (!parsed) {
+      // Partial "/me-ima…" — still show matching skill hint if unique-ish
+      const v = String(inputEl?.value || '');
+      if (v.startsWith('/') && !v.slice(1).includes(' ')) {
+        const q = v.slice(1).toLowerCase();
+        const hits = skillCatalog().filter(
+          (s) => s.id.includes(q) || s.label.toLowerCase().includes(q)
+        );
+        if (hits.length === 1 && q) {
+          skillLiveEl.style.display = '';
+          skillLiveEl.empty();
+          skillLiveEl.createSpan({
+            cls: 'me-soul-cmdbar-skill-live-badge',
+            text: `技能 ${hits[0].label}`,
+          });
+          skillLiveEl.createSpan({
+            cls: 'me-soul-cmdbar-skill-live-desc',
+            text: hits[0].desc || '',
+          });
+          return;
+        }
+      }
+      skillLiveEl.style.display = 'none';
+      skillLiveEl.empty();
+      return;
+    }
+    skillLiveEl.style.display = '';
+    skillLiveEl.empty();
+    skillLiveEl.createSpan({
+      cls: 'me-soul-cmdbar-skill-live-badge',
+      text: `技能 /${parsed.skillId}`,
+    });
+    skillLiveEl.createSpan({
+      cls: 'me-soul-cmdbar-skill-live-desc',
+      text: skillDesc(parsed.skillId),
+    });
+  }
+
+  function closeSkillSuggest() {
+    suggestKind = null;
+    suggestItems = [];
+    if (suggestEl) {
+      suggestEl.style.display = 'none';
+      suggestEl.empty();
+    }
+  }
+
+  function paintSkillSuggest() {
+    if (!suggestEl) return;
+    suggestEl.empty();
+    suggestItems.forEach((it, i) => {
+      const el = suggestEl.createDiv({ cls: 'me-soul-suggest-item' });
+      el.toggleClass('is-selected', i === suggestIndex);
+      el.createSpan({ cls: 'me-soul-suggest-name', text: it.label });
+      if (it.desc) {
+        el.createSpan({ cls: 'me-soul-suggest-path', text: it.desc });
+      }
+      el.onmousedown = (ev) => {
+        ev.preventDefault();
+        suggestIndex = i;
+        acceptSkillSuggest();
+      };
+    });
+  }
+
+  function updateSkillSuggest() {
+    if (activeSkill || !inputEl) {
+      closeSkillSuggest();
+      return;
+    }
+    const v = inputEl.value;
+    if (!v.startsWith('/') || v.slice(1).includes(' ')) {
+      closeSkillSuggest();
+      return;
+    }
+    const q = v.slice(1).toLowerCase();
+    const items = skillCatalog()
+      .filter((s) => s.label.toLowerCase().includes(q) || (s.id || '').includes(q))
+      .slice(0, 10);
+    if (!items.length) {
+      closeSkillSuggest();
+      return;
+    }
+    suggestKind = 'skill';
+    suggestItems = items;
+    suggestIndex = 0;
+    suggestEl.style.display = 'block';
+    paintSkillSuggest();
+  }
+
+  function acceptSkillSuggest() {
+    const it = suggestItems[suggestIndex];
+    if (!it) return closeSkillSuggest();
+    activeSkill = { id: it.id, label: it.label };
+    if (inputEl) inputEl.value = '';
+    closeSkillSuggest();
+    renderSkillPill();
+    syncComposerSkillClass();
+    updateSkillLiveHint();
+    inputEl?.focus();
+  }
+
+  function clearSkillUi() {
+    activeSkill = null;
+    closeSkillSuggest();
+    if (skillLiveEl) {
+      skillLiveEl.style.display = 'none';
+      skillLiveEl.empty();
+    }
+    renderSkillPill();
+    if (inputEl) {
+      inputEl.setAttr(
+        'placeholder',
+        '改短一点 · 或输入 / 选用技能（如 /me-imagine）…'
+      );
+      inputEl.removeClass('is-skill-mode');
+    }
   }
 
   function refreshModelSelect() {
@@ -1460,6 +1717,7 @@ export function createCommandBarController(app, plugin, deps) {
     detachContextListeners();
     // Clear multi-turn session on close
     turns = [];
+    clearSkillUi();
     try {
       const view = getMarkdownView();
       view?.editor?.focus?.();
@@ -1493,14 +1751,24 @@ export function createCommandBarController(app, plugin, deps) {
     lastVote = null;
     showFeedbackRow(false);
 
-    if (
-      /^\/(me-digest|me-write-insight|me-care-check|memorized|me-reindex|me-soul-promote|me-reflect-feedback)/.test(
-        text
-      )
-    ) {
-      notify('深度技能请在全屏 Chat 中运行');
-      close();
-      await plugin.activateView?.();
+    const skillCmd = activeSkill
+      ? { skillId: activeSkill.id, rest: text }
+      : parseSlashSkillCommand(text);
+    if (skillCmd) {
+      plugin.queueChatLaunch?.({
+        skillId: skillCmd.skillId,
+        text: skillCmd.rest,
+        autoSend: true,
+      });
+      if (inputEl) inputEl.value = '';
+      clearSkillUi();
+      notify(`正在全屏 Chat 运行 /${skillCmd.skillId}…`);
+      close({ reason: 'fullscreen', cancelIfBusy: false });
+      try {
+        await plugin.activateView?.();
+      } catch (e) {
+        notify(e?.message || '无法打开全屏对话');
+      }
       return;
     }
 
@@ -1698,6 +1966,10 @@ export function createCommandBarController(app, plugin, deps) {
     }
     panelEl = null;
     inputEl = null;
+    skillPillEl = null;
+    suggestEl = null;
+    skillLiveEl = null;
+    activeSkill = null;
     transcriptEl = null;
     resultEl = null;
     thinkingEl = null;

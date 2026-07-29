@@ -242,12 +242,14 @@ export class GrokAcpClient {
       // Friendlier third-party gateway errors
       if (
         this.isThirdParty &&
-        /tool_calls.*name|empty string|invalid_request_error/i.test(msg)
+        /tool_calls.*name|empty string|invalid_request_error|image_url|tool_result\.content|new_api_error/i.test(
+          msg
+        )
       ) {
         msg =
-          `${msg}\n\n提示：第三方接口常与流式 tool_calls 不兼容。` +
-          `插件已在第三方配置中关闭 stream_tool_calls；请切回 Grok订阅 再切回第三方（重启内核），或新开会话后再试。` +
-          `若仍失败，该模型/网关可能不支持 Agent 工具调用。`;
+          `${msg}\n\n提示：第三方会话可能已被错误的工具结果污染。` +
+          `已丢弃当前内核会话；请用消息上的「重发 / 编辑」再试（不必新开对话）。` +
+          `若仍失败，可切 Grok订阅 / GPT，或检查 Claude 是否走 messages 后端。`;
         // Drop poisoned session so next prompt starts clean
         this.sessionId = null;
       }
@@ -489,6 +491,22 @@ export function makeVaultAutoApprove(isFreeWritePath, vaultBase) {
 
     const kind = (toolCall.kind || '').toLowerCase();
     if (['read', 'search', 'fetch', 'think'].includes(kind)) return allow.optionId;
+
+    // Grok Imagine writes only under ~/.grok/sessions — safe to auto-approve.
+    const imagineName =
+      toolCall?._meta?.['x.ai/tool']?.name ||
+      toolCall?._meta?.['xai/tool']?.name ||
+      '';
+    const title = String(toolCall?.title || '').toLowerCase();
+    if (
+      imagineName === 'image_gen' ||
+      imagineName === 'image_edit' ||
+      title === 'image_gen' ||
+      title === 'image_edit' ||
+      title.startsWith('imagine')
+    ) {
+      return allow.optionId;
+    }
 
     const locations = toolCall.locations || [];
     if (['edit', 'delete', 'move'].includes(kind) && locations.length) {

@@ -9,6 +9,7 @@
  *   /  → skill menu → pill mode (Backspace on empty input clears)
  *   paste/drop file → agent-inbox/raw/ + attachment chip
  *   👍 / 👎 (toggle/cancel) + 反馈 (written note → reflect skill) + copy
+ *   编辑 / 重发（用户气泡）+ 重发/重新生成（助手气泡；截断后续并重置 ACP）
  *   → agent-inbox/soul/feedback/<date>.md；写反馈触发 me-reflect-feedback
  */
 import { renderAgentMessage } from './renderer.js';
@@ -50,6 +51,9 @@ import {
   deleteSessionFile,
   restoreArchivedSession,
   formatRecentConversation,
+  truncateFromMessage,
+  findPrecedingUserMessage,
+  newId,
   SESSION_PATH,
 } from './chat-history.js';
 import {
@@ -64,6 +68,14 @@ import {
   appendFeedbackEntry,
   updateFeedbackVote,
 } from './feedback-store.js';
+import {
+  embedWikilink,
+  extractImagineImagePath,
+  ingestImagineImageToRaw,
+  isImagineTool,
+} from './image-ingest.js';
+import { applyToEditor } from './editor-apply.js';
+import { MarkdownView } from 'obsidian';
 
 /**
  * @param {HTMLElement} containerEl
@@ -263,7 +275,10 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
     for (const m of chatSession.messages) {
       if (m.role === 'user') {
-        appendUser(m.text || '', m.chips || [], m.skill || null, { persist: false });
+        appendUser(m.text || '', m.chips || [], m.skill || null, {
+          persist: false,
+          id: m.id,
+        });
       } else if (m.role === 'agent') {
         await appendAgentFromHistory(m);
       }
@@ -1126,6 +1141,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       'me-reflect-feedback': '根据具体反馈反思并写入记忆（确认门）',
       'me-care-check': '检查牵挂',
       'me-soul-promote': '清洗 Wiki→升格 Soul',
+      'me-imagine': 'Grok Imagine 生图 → 入库并可插入笔记',
       memorized: '写入/重建向量记忆库',
       'me-reindex': '（别名）同 /memorized',
       'me-apply-pending': '合并已确认 pending',
@@ -1135,6 +1151,114 @@ export function mountMeSoulChat(containerEl, ctx) {
   }
 
   // ---------- messages ----------
+  /**
+   * After Grok image_gen/image_edit completes: copy session file → agent-inbox/raw/
+   * and show preview + insert button under the tool row.
+   * @param {any} u
+   * @param {{ root: HTMLElement, prompt?: string, ingested?: boolean }} t
+   */
+  async function handleImagineCompleted(u, t) {
+    if (t.ingested) return;
+    const abs = extractImagineImagePath(u);
+    if (!abs) return;
+    t.ingested = true;
+    try {
+      const { vaultPath } = await ingestImagineImageToRaw(app, abs, {
+        prompt: t.prompt || u.rawInput?.prompt || '',
+        ensureFolder,
+      });
+      renderImagineCard(t.root, vaultPath);
+      scrollDown();
+    } catch (e) {
+      const err = document.createElement('div');
+      err.className = 'me-soul-imagine-error';
+      err.textContent = `生图入库失败：${e?.message || e}`;
+      t.root.insertAdjacentElement('afterend', err);
+      scrollDown();
+    }
+  }
+
+  /**
+   * @param {HTMLElement} toolRoot
+   * @param {string} vaultPath
+   */
+  function renderImagineCard(toolRoot, vaultPath) {
+    const parent = toolRoot.parentElement;
+    if (!parent?.createDiv) return;
+    const existing = parent.querySelector(
+      `.me-soul-imagine-card[data-path="${CSS.escape(vaultPath)}"]`
+    );
+    if (existing) return;
+
+    const card = parent.createDiv({ cls: 'me-soul-imagine-card' });
+    toolRoot.insertAdjacentElement('afterend', card);
+    card.setAttr('data-path', vaultPath);
+
+    const img = card.createEl('img', { cls: 'me-soul-imagine-thumb' });
+    img.setAttr('alt', shortName(vaultPath));
+    try {
+      const src =
+        app.vault.adapter?.getResourcePath?.(vaultPath) ||
+        app.vault.getResourcePath?.(app.vault.getAbstractFileByPath(vaultPath));
+      if (src) img.setAttr('src', src);
+    } catch {
+      /* preview optional */
+    }
+
+    const meta = card.createDiv({ cls: 'me-soul-imagine-meta' });
+    meta.createDiv({ cls: 'me-soul-imagine-path', text: vaultPath });
+    const actions = meta.createDiv({ cls: 'me-soul-imagine-actions' });
+
+    const btnInsert = actions.createEl('button', {
+      text: '插入当前笔记',
+      attr: { type: 'button' },
+    });
+    btnInsert.onclick = () => {
+      const ok = insertImagineIntoActiveNote(vaultPath);
+      if (ok) notify(`已插入 ${vaultPath}`);
+    };
+
+    const btnCopy = actions.createEl('button', {
+      text: '复制链接',
+      attr: { type: 'button' },
+    });
+    btnCopy.onclick = async () => {
+      const link = embedWikilink(vaultPath);
+      try {
+        await navigator.clipboard.writeText(link);
+        notify('已复制 ' + link);
+      } catch {
+        notify(link);
+      }
+    };
+  }
+
+  /**
+   * @param {string} vaultPath
+   * @returns {boolean}
+   */
+  function insertImagineIntoActiveNote(vaultPath) {
+    const view = app.workspace.getActiveViewOfType(MarkdownView);
+    const editor = view?.editor;
+    if (!editor) {
+      notify('请先打开一篇 Markdown 笔记，再插入图片');
+      return false;
+    }
+    const text = embedWikilink(vaultPath);
+    // Prefer a leading newline when cursor is mid-line with content before it
+    let insert = text;
+    try {
+      const cur = editor.getCursor?.('to') || editor.getCursor?.() || { line: 0, ch: 0 };
+      const line = editor.getLine?.(cur.line) ?? '';
+      if (cur.ch > 0 && line.slice(0, cur.ch).trim()) insert = '\n' + text;
+      if (line.slice(cur.ch).trim()) insert = insert + '\n';
+    } catch {
+      /* plain insert */
+    }
+    applyToEditor(editor, 'insert_at_cursor', insert);
+    return true;
+  }
+
   function appendWelcome() {
     const w = logEl.createDiv({
       cls:
@@ -1173,10 +1297,12 @@ export function mountMeSoulChat(containerEl, ctx) {
    * @param {string} text
    * @param {{ path: string, kind?: string }[]} usedChips
    * @param {{ id?: string, label?: string } | null} [skill]
-   * @param {{ persist?: boolean }} [opts]
+   * @param {{ persist?: boolean, id?: string }} [opts]
    */
   function appendUser(text, usedChips, skill, opts = {}) {
+    const msgId = opts.id || newId('m');
     const div = logEl.createDiv({ cls: 'me-soul-msg me-soul-user' });
+    div.dataset.msgId = msgId;
     const body = div.createDiv({ cls: 'me-soul-msg-body' });
     if (skill || (usedChips && usedChips.length)) {
       const meta = body.createDiv({ cls: 'me-soul-user-meta' });
@@ -1190,9 +1316,18 @@ export function mountMeSoulChat(containerEl, ctx) {
       }
     }
     if (text) body.createDiv({ cls: 'me-soul-user-text', text });
+    appendUserActions(div, {
+      id: msgId,
+      text: text || '',
+      chips: (usedChips || [])
+        .filter((c) => c?.path)
+        .map((c) => ({ path: c.path, kind: c.kind || 'ref' })),
+      skill: skill ? { id: skill.id, label: skill.label || skill.id } : null,
+    });
     scrollDown();
     if (opts.persist !== false) {
       recordMessage({
+        id: msgId,
         role: 'user',
         text: text || '',
         skill: skill ? { id: skill.id, label: skill.label || skill.id } : null,
@@ -1204,11 +1339,37 @@ export function mountMeSoulChat(containerEl, ctx) {
   }
 
   /**
+   * Edit / resend controls on user bubbles.
+   * @param {HTMLElement} msgDiv
+   * @param {{ id: string, text: string, chips: { path: string, kind?: string }[], skill: { id?: string, label?: string } | null }} snap
+   */
+  function appendUserActions(msgDiv, snap) {
+    const foot = msgDiv.createDiv({ cls: 'me-soul-msg-foot me-soul-msg-foot--user' });
+    const editBtn = foot.createEl('button', {
+      cls: 'me-soul-foot-btn',
+      attr: { type: 'button', title: '编辑后重发', 'aria-label': '编辑' },
+      text: '编辑',
+    });
+    const resendBtn = foot.createEl('button', {
+      cls: 'me-soul-foot-btn',
+      attr: { type: 'button', title: '截断后续并原样重发', 'aria-label': '重发' },
+      text: '重发',
+    });
+    editBtn.onclick = () => {
+      void editUserTurn(snap.id);
+    };
+    resendBtn.onclick = () => {
+      void resendUserTurn(snap.id);
+    };
+  }
+
+  /**
    * Replay a stored agent turn (fences → cards; errors as error row).
    * @param {import('./chat-history.js').ChatMessage} m
    */
   async function appendAgentFromHistory(m) {
     const div = logEl.createDiv({ cls: 'me-soul-msg me-soul-agent' });
+    if (m.id) div.dataset.msgId = m.id;
     const body = div.createDiv({ cls: 'me-soul-msg-body' });
     if (m.error) {
       body.createDiv({ cls: 'me-soul-error', text: `出错了：${m.error}` });
@@ -1223,7 +1384,142 @@ export function mountMeSoulChat(containerEl, ctx) {
     } else {
       body.createDiv({ cls: 'me-soul-text', text: '（空回复）' });
     }
-    appendFooter(div, m.text || m.error || '');
+    appendFooter(div, m.text || m.error || '', {
+      messageId: m.id,
+      isError: !!m.error,
+    });
+  }
+
+  /**
+   * Cut transcript + vault session from messageId (inclusive), reset ACP kernel session.
+   * @param {string} messageId
+   * @returns {Promise<import('./chat-history.js').ChatMessage | null>}
+   */
+  async function truncateAndResetFrom(messageId) {
+    const { session, removed } = truncateFromMessage(chatSession, messageId);
+    if (!removed) {
+      notify('找不到要重发的消息');
+      return null;
+    }
+    chatSession = session;
+    schedulePersist();
+    plugin.acp?.resetSession?.();
+    await reloadChatFromSession(chatSession);
+    return removed;
+  }
+
+  /**
+   * Put a prior user turn back into the composer (after truncating it and later turns).
+   * @param {string} messageId
+   */
+  async function editUserTurn(messageId) {
+    if (busy) {
+      notify('请等待当前回复结束');
+      return;
+    }
+    const removed = await truncateAndResetFrom(messageId);
+    if (!removed || removed.role !== 'user') return;
+    restoreComposerFromUser(removed);
+    notify('已载入到输入框，改完直接发送（后续消息已截断）');
+    requestAnimationFrame(() => {
+      inputEl.focus();
+      autoGrow();
+    });
+  }
+
+  /**
+   * Resend a user turn, or regenerate from an agent turn.
+   * @param {string} messageId
+   * @param {{ asAgentRetry?: boolean }} [opts]
+   */
+  async function resendUserTurn(messageId, opts = {}) {
+    if (busy) {
+      notify('请等待当前回复结束');
+      return;
+    }
+    const snap = (chatSession.messages || []).find((m) => m.id === messageId) || null;
+
+    // Agent「重发 / 重新生成」：保留用户气泡，只砍掉该助手回复及之后
+    if (opts.asAgentRetry || snap?.role === 'agent') {
+      const user = findPrecedingUserMessage(chatSession, messageId);
+      if (!user) {
+        notify('没有可重发的用户消息');
+        return;
+      }
+      const cutId =
+        snap?.role === 'agent'
+          ? snap.id
+          : (chatSession.messages || []).find(
+              (m) => m.role === 'agent' && m.id === messageId
+            )?.id || messageId;
+      const removed = await truncateAndResetFrom(cutId);
+      if (!removed) return;
+      const chipsSnap = (user.chips || []).map((c) => ({
+        path: c.path,
+        kind: c.kind || 'ref',
+      }));
+      const skillSnap = user.skill?.id
+        ? { id: user.skill.id, label: user.skill.label || user.skill.id }
+        : null;
+      setBusy(true);
+      setStatus('思考中…');
+      try {
+        if (skillSnap) {
+          await runSkillFlow(skillSnap, user.text || '', chipsSnap);
+        } else {
+          await runChatFlow(user.text || '', chipsSnap);
+        }
+        setStatus('就绪');
+      } catch (e) {
+        const msg = createAgentMessage();
+        msg.fail(e?.message || String(e));
+        setStatus('失败');
+      } finally {
+        setBusy(false);
+        refreshCare();
+      }
+      return;
+    }
+
+    if (!snap || snap.role !== 'user') {
+      notify('只能重发用户消息');
+      return;
+    }
+    const removed = await truncateAndResetFrom(messageId);
+    if (!removed || removed.role !== 'user') return;
+    await send({
+      text: removed.text || '',
+      chips: (removed.chips || []).map((c) => ({
+        path: c.path,
+        kind: c.kind || 'ref',
+      })),
+      skill: removed.skill
+        ? { id: removed.skill.id || '', label: removed.skill.label || removed.skill.id || '' }
+        : null,
+      skipComposerClear: true,
+    });
+  }
+
+  /**
+   * @param {import('./chat-history.js').ChatMessage} userMsg
+   */
+  function restoreComposerFromUser(userMsg) {
+    inputEl.value = userMsg.text || '';
+    const restored = (userMsg.chips || [])
+      .filter((c) => c?.path && c.kind !== 'active')
+      .map((c) => ({ path: c.path, kind: c.kind === 'raw' ? 'raw' : 'ref' }));
+    chips = restored;
+    if (userMsg.skill?.id && !String(userMsg.skill.id).startsWith('__')) {
+      activeSkill = {
+        id: userMsg.skill.id,
+        label: userMsg.skill.label || userMsg.skill.id,
+      };
+    } else {
+      activeSkill = null;
+    }
+    renderChips();
+    renderSkillPill();
+    autoGrow();
   }
 
   /**
@@ -1303,7 +1599,9 @@ export function mountMeSoulChat(containerEl, ctx) {
 
   /** Streaming agent message builder. */
   function createAgentMessage() {
+    const msgId = newId('m');
     const div = logEl.createDiv({ cls: 'me-soul-msg me-soul-agent' });
+    div.dataset.msgId = msgId;
     const body = div.createDiv({ cls: 'me-soul-msg-body' });
 
     let thoughtEl = null; // current <details> body
@@ -1366,19 +1664,33 @@ export function mountMeSoulChat(containerEl, ctx) {
         endThought();
         void endText();
         const root = body.createDiv({ cls: 'me-soul-tool-row' });
-        root.createSpan({ cls: 'me-soul-tool-icon', text: toolIcon(u.kind) });
-        root.createSpan({ cls: 'me-soul-tool-title', text: u.title || u.kind || 'tool' });
+        const iconKind = isImagineTool(u) ? 'image_gen' : u.kind;
+        root.createSpan({ cls: 'me-soul-tool-icon', text: toolIcon(iconKind) });
+        root.createSpan({
+          cls: 'me-soul-tool-title',
+          text: u.title || u.kind || 'tool',
+        });
         const st = root.createSpan({ cls: 'me-soul-tool-status is-running', text: '' });
-        toolEls.set(u.toolCallId, { root, statusEl: st });
+        toolEls.set(u.toolCallId, {
+          root,
+          statusEl: st,
+          imagine: isImagineTool(u),
+          prompt: String(u.rawInput?.prompt || ''),
+        });
         scrollDown();
       },
       toolUpdate(u) {
         const t = toolEls.get(u.toolCallId);
         if (!t) return;
+        if (isImagineTool(u)) t.imagine = true;
+        if (u.rawInput?.prompt) t.prompt = String(u.rawInput.prompt);
         const s = (u.status || '').toLowerCase();
         if (s === 'completed') {
           t.statusEl.removeClass('is-running');
           t.statusEl.addClass('is-done');
+          if (t.imagine || isImagineTool(u)) {
+            void handleImagineCompleted(u, t);
+          }
         } else if (s === 'failed') {
           t.statusEl.removeClass('is-running');
           t.statusEl.addClass('is-failed');
@@ -1424,9 +1736,10 @@ export function mountMeSoulChat(containerEl, ctx) {
           textEl = null;
           textBuf = '';
         }
-        appendFooter(div, fullText);
+        appendFooter(div, fullText, { messageId: msgId, isError: false });
         scrollDown();
         recordMessage({
+          id: msgId,
           role: 'agent',
           text: fullText || '',
         });
@@ -1436,8 +1749,10 @@ export function mountMeSoulChat(containerEl, ctx) {
         await endText();
         const msg = err?.message || String(err || 'unknown');
         body.createDiv({ cls: 'me-soul-error', text: `出错了：${msg}` });
+        appendFooter(div, msg, { messageId: msgId, isError: true });
         scrollDown();
         recordMessage({
+          id: msgId,
           role: 'agent',
           text: '',
           error: msg,
@@ -1446,8 +1761,31 @@ export function mountMeSoulChat(containerEl, ctx) {
     };
   }
 
-  function appendFooter(msgDiv, fullText) {
+  /**
+   * @param {HTMLElement} msgDiv
+   * @param {string} fullText
+   * @param {{ messageId?: string, isError?: boolean }} [opts]
+   */
+  function appendFooter(msgDiv, fullText, opts = {}) {
     const foot = msgDiv.createDiv({ cls: 'me-soul-msg-foot' });
+    const messageId = opts.messageId || msgDiv.dataset.msgId || '';
+    const isError = !!opts.isError;
+
+    const retry = foot.createEl('button', {
+      cls: 'me-soul-foot-btn me-soul-foot-btn--retry',
+      attr: {
+        type: 'button',
+        title: isError
+          ? '截断本条失败回复并重发上一用户消息'
+          : '截断本条回复并重新生成',
+        'aria-label': isError ? '重发' : '重新生成',
+      },
+      text: isError ? '重发' : '重新生成',
+    });
+    retry.onclick = () => {
+      void resendUserTurn(messageId, { asAgentRetry: true });
+    };
+
     const up = foot.createEl('button', {
       cls: 'me-soul-foot-btn',
       attr: { type: 'button', title: '有用（再点取消）', 'aria-label': '有用' },
@@ -1679,14 +2017,35 @@ export function mountMeSoulChat(containerEl, ctx) {
   }
 
   // ---------- send ----------
-  async function send() {
+  /**
+   * @param {{
+   *   text?: string,
+   *   chips?: { path: string, kind?: string }[],
+   *   skill?: { id: string, label: string } | null,
+   *   skipComposerClear?: boolean,
+   * }} [override]
+   */
+  async function send(override = {}) {
     if (busy) {
       plugin.acp?.cancel?.();
       return;
     }
-    const text = inputEl.value.trim();
-    const skill = activeSkill;
-    const usedChips = buildSendChips(chips);
+    const fromOverride = override.text != null || override.chips != null || override.skill !== undefined;
+    const text = fromOverride
+      ? String(override.text || '').trim()
+      : inputEl.value.trim();
+    const skill = fromOverride
+      ? override.skill || null
+      : activeSkill;
+    const manualChips = fromOverride
+      ? Array.isArray(override.chips)
+        ? override.chips.slice()
+        : []
+      : chips;
+    const usedChips = fromOverride
+      ? // Resend keeps the exact chip set from the prior turn (incl. active if saved).
+        manualChips.slice()
+      : buildSendChips(manualChips);
     // Allow send with only active-note context (no text) only if skill or chips
     if (!text && !skill && !usedChips.length) return;
 
@@ -1704,13 +2063,19 @@ export function mountMeSoulChat(containerEl, ctx) {
       return;
     }
 
-    inputEl.value = '';
-    autoGrow();
-    chips = [];
-    activeSkill = null;
-    renderChips();
-    renderSkillPill();
-    closeSuggest();
+    if (!override.skipComposerClear) {
+      inputEl.value = '';
+      autoGrow();
+      chips = [];
+      activeSkill = null;
+      renderChips();
+      renderSkillPill();
+      closeSuggest();
+    } else {
+      // Resend path: composer may still hold unrelated draft — leave it,
+      // but clear skill pill if we injected one only for the resend payload.
+      closeSuggest();
+    }
 
     // Skill pill must not hijack "discuss this note" into 心迹 draft.
     let effectiveSkill = skill;
@@ -1825,6 +2190,9 @@ export function mountMeSoulChat(containerEl, ctx) {
     const activePath = activeNoteEnabled()
       ? getEffectiveActivePath(activeNoteState)
       : null;
+    const conversation = formatRecentConversation(chatSession, {
+      currentUserText: text,
+    });
 
     const fullPrompt = buildGrokSkillPrompt({
       skillId: skill.id,
@@ -1832,6 +2200,7 @@ export function mountMeSoulChat(containerEl, ctx) {
       userText: text || '',
       contextBlock,
       activePath,
+      conversation,
     });
 
     let full = '';
@@ -1991,7 +2360,10 @@ export function mountMeSoulChat(containerEl, ctx) {
     }
     for (const m of chatSession.messages) {
       if (m.role === 'user') {
-        appendUser(m.text || '', m.chips || [], m.skill || null, { persist: false });
+        appendUser(m.text || '', m.chips || [], m.skill || null, {
+          persist: false,
+          id: m.id,
+        });
       } else if (m.role === 'agent') {
         await appendAgentFromHistory(m);
       }
@@ -2000,7 +2372,7 @@ export function mountMeSoulChat(containerEl, ctx) {
   }
 
   // Restore previous transcript (or welcome). Fire-and-forget with care refresh.
-  restoreOrWelcome()
+  const bootPromise = restoreOrWelcome()
     .then(() => refreshCare())
     .catch((e) => {
       console.warn(e);
@@ -2009,9 +2381,39 @@ export function mountMeSoulChat(containerEl, ctx) {
     });
   autoGrow();
 
+  /**
+   * Run a skill queued by the IDE command bar (`/me-digest …` etc.).
+   */
+  async function consumeQueuedLaunch() {
+    try {
+      await bootPromise;
+    } catch {
+      /* */
+    }
+    const launch = plugin.takeChatLaunch?.();
+    if (!launch?.skillId) return;
+    if (busy) {
+      // Re-queue so a later idle call can pick it up
+      plugin.queueChatLaunch?.(launch);
+      notify('对话进行中，技能将在空闲后运行');
+      return;
+    }
+    activeSkill = { id: launch.skillId, label: `/${launch.skillId}` };
+    renderSkillPill();
+    inputEl.value = launch.text || '';
+    autoGrow();
+    closeSuggest();
+    if (launch.autoSend === false) {
+      inputEl.focus();
+      return;
+    }
+    await send();
+  }
+
   return {
     refreshCare,
     reloadSession: restoreOrWelcome,
+    consumeQueuedLaunch,
     destroy() {
       if (persistTimer) {
         clearTimeout(persistTimer);
@@ -2087,6 +2489,8 @@ function toolIcon(kind) {
     execute: '⌨️',
     fetch: '🌐',
     think: '💭',
+    image_gen: '🖼',
+    image_edit: '🎨',
     other: '🔧',
   };
   return map[(kind || '').toLowerCase()] || '🔧';

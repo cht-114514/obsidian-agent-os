@@ -955,31 +955,93 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   font-size: 1.05em;
 }
 
-/* MathJax glyphs aren't copyable — we rewrite clipboard to TeX source */
+/* MathJax SVG isn't text-selectable — transparent TeX overlay + host highlight */
 .me-soul-math-copyable,
 .me-soul-msg-body .math,
 .me-soul-msg-body mjx-container,
 .me-soul-md .math,
-.me-soul-md mjx-container {
-  cursor: copy;
+.me-soul-md mjx-container,
+.me-soul-cmdbar-result-text .math,
+.me-soul-cmdbar-result-text mjx-container,
+.me-soul-cmdbar-msg-text .math,
+.me-soul-cmdbar-msg-text mjx-container {
+  cursor: text;
   position: relative;
+  overflow: visible;
   user-select: text !important;
   -webkit-user-select: text !important;
 }
 
+/* Inline hosts need a box so the overlay can cover the glyphs */
+.me-soul-math-copyable.math-inline,
+.me-soul-math-copyable.math.math-inline,
+.me-soul-msg-body .math.math-inline.me-soul-math-copyable {
+  display: inline-block;
+  vertical-align: middle;
+  padding: 0 0.12em;
+  margin: 0 0.04em;
+  border-radius: 0.2em;
+}
+
+/* Let drags hit the TeX overlay, not the SVG */
+.me-soul-math-copyable > :not(.me-soul-math-copytext) {
+  pointer-events: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/*
+ * Full-size transparent TeX layer — selectable like normal text.
+ * Text stays invisible; only the browser selection / host highlight shows.
+ */
 .me-soul-math-copytext {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-  user-select: text;
-  -webkit-user-select: text;
-  pointer-events: none;
+  position: absolute !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 0.15em !important;
+  overflow: hidden !important;
+  clip: auto !important;
+  clip-path: none !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+  border: 0 !important;
+  opacity: 1 !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  caret-color: transparent !important;
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  z-index: 2;
+  font-size: 1em !important;
+  line-height: 1.35 !important;
+  letter-spacing: 0.02em;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  box-sizing: border-box !important;
+}
+
+.me-soul-math-copytext::selection,
+.me-soul-math-copytext *::selection {
+  background: var(--text-selection, rgba(60, 132, 246, 0.35)) !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+/* Whole-formula highlight (SVG itself won't paint ::selection) */
+.me-soul-math-copyable.is-math-selected {
+  background: var(--text-selection, rgba(60, 132, 246, 0.32)) !important;
+  border-radius: 0.25em;
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--text-selection, #3c84f6) 45%, transparent);
+}
+
+.theme-dark .me-soul-math-copyable.is-math-selected {
+  background: var(--text-selection, rgba(80, 150, 255, 0.38)) !important;
 }
 
 .me-soul-agent .me-soul-msg-body .math-block,
@@ -988,9 +1050,10 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   display: block;
   margin: 0.55em 0;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: visible;
   text-align: center;
   max-width: 100%;
+  padding-top: 0.15em;
 }
 
 .me-soul-agent .me-soul-msg-body .math-inline,
@@ -1375,6 +1438,16 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   transition: opacity var(--ms-duration-fast) var(--ms-ease);
 }
 
+.me-soul-msg-foot--user {
+  margin-top: 6px;
+  justify-content: flex-end;
+}
+
+.me-soul-foot-btn--retry {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .me-soul-panel-fullscreen .me-soul-msg-foot {
   padding-top: 4px;
   border-top: 1px solid rgba(0, 0, 0, 0.04);
@@ -1522,6 +1595,68 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   background: var(--background-secondary);
   border: 1px solid var(--ms-hairline);
   font-size: 0.85rem;
+}
+
+.me-soul-imagine-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 0.35em 0 0.6em;
+  padding: 10px 12px;
+  border-radius: var(--ms-radius-sm, 8px);
+  background: var(--background-secondary);
+  border: 1px solid var(--ms-hairline);
+  max-width: 100%;
+}
+
+.me-soul-imagine-thumb {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--background-primary);
+  flex-shrink: 0;
+}
+
+.me-soul-imagine-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.me-soul-imagine-path {
+  font-size: 0.78rem;
+  color: var(--ms-muted, var(--text-muted));
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+.me-soul-imagine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.me-soul-imagine-actions button {
+  font-size: 0.82rem;
+  padding: 4px 10px;
+  border-radius: var(--ms-radius-xs, 6px);
+  border: 1px solid var(--ms-hairline);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.me-soul-imagine-actions button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.me-soul-imagine-error {
+  margin: 0.25em 0 0.5em;
+  font-size: 0.82rem;
+  color: var(--color-red, #e06c75);
 }
 
 /* ----- welcome (tips only — no slogan) ----- */
@@ -3268,6 +3403,81 @@ body.me-soul-plugin-loaded .callout[data-callout='me-soul-fallback'] {
   box-shadow: none;
   font-family: inherit;
   flex-shrink: 0;
+}
+
+.me-soul-cmdbar-composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.me-soul-cmdbar-skill-slot {
+  display: none;
+}
+
+.me-soul-cmdbar-skill-slot.is-active {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.me-soul-cmdbar-skill-pill-desc {
+  font-family: var(--font-interface);
+  font-size: 0.72rem;
+  opacity: 0.75;
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.me-soul-cmdbar-skill-live {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+
+.me-soul-cmdbar-skill-live-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(139, 92, 246, 0.14);
+  color: #6d28d9;
+  border: 1px solid rgba(139, 92, 246, 0.22);
+}
+
+.me-soul-cmdbar-skill-live-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.me-soul-cmdbar-input.is-skill-mode {
+  border-color: rgba(139, 92, 246, 0.45);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.12);
+}
+
+.me-soul-cmdbar-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 30;
+  max-height: 220px;
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.theme-dark .me-soul-cmdbar-skill-live-badge,
+.theme-dark .me-soul-cmdbar-panel .me-soul-skill-active-pill {
+  background: rgba(167, 139, 250, 0.18);
+  color: #ddd6fe;
+  border-color: rgba(167, 139, 250, 0.28);
 }
 
 .me-soul-cmdbar-input:focus {

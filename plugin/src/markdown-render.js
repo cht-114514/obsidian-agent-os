@@ -3,8 +3,9 @@
  * Obsidian's MarkdownRenderer can leave `$...$` raw unless MathJax is loaded
  * and finishRenderMath runs; models also emit \( \) / \[ \] which need normalizing.
  *
- * MathJax output (SVG/CHTML) is not meaningfully selectable — we annotate each
- * formula with its TeX source and rewrite clipboard on copy / dblclick.
+ * MathJax output (SVG/CHTML) is not meaningfully selectable — we put a
+ * full-size transparent TeX overlay on top (so drag-select works like text),
+ * paint a normal selection highlight on the host, and rewrite clipboard to TeX.
  */
 
 /**
@@ -115,14 +116,15 @@ export function annotateMathElement(el, latex, display) {
   if (!src) return;
   el.setAttribute('data-me-soul-latex', src);
   el.setAttribute('data-me-soul-display', display ? '1' : '0');
-  el.setAttribute('title', '双击复制 LaTeX');
+  el.removeAttribute?.('title');
   if (el.classList) el.classList.add('me-soul-math-copyable');
 
   if (typeof document === 'undefined' || !el.appendChild) return;
   el.querySelectorAll?.(':scope > .me-soul-math-copytext')?.forEach?.((n) => n.remove());
+  el.querySelectorAll?.(':scope > .me-soul-math-copy-btn')?.forEach?.((n) => n.remove());
   // Also clear non-:scope for older engines
   Array.from(el.children || [])
-    .filter((c) => c.classList?.contains('me-soul-math-copytext'))
+    .filter((c) => c.classList?.contains('me-soul-math-copytext') || c.classList?.contains('me-soul-math-copy-btn'))
     .forEach((c) => c.remove());
 
   const span = document.createElement('span');
@@ -174,7 +176,13 @@ export function annotateRenderedMath(root, markdown) {
 export function flattenDomLatexToText(frag) {
   if (!frag) return '';
   const root = /** @type {ParentNode} */ (frag);
-  root.querySelectorAll?.('.me-soul-math-copytext')?.forEach?.((n) => n.remove());
+
+  // Overlay spans already hold formatted TeX — promote to text before math hosts.
+  root.querySelectorAll?.('.me-soul-math-copytext')?.forEach?.((n) => {
+    const t = String(n.textContent || '');
+    if (n.parentNode) n.replaceWith(document.createTextNode(t));
+    else n.remove();
+  });
 
   const replaceMath = (el) => {
     if (!el?.parentNode) return;
@@ -208,12 +216,7 @@ export function flattenDomLatexToText(frag) {
  * @returns {string | null} plain text with LaTeX, or null to keep native copy
  */
 export function selectionPlainWithLatex(sel, root) {
-  if (!sel || !root || sel.rangeCount === 0 || sel.isCollapsed) return null;
-  const range = sel.getRangeAt(0);
-  const ancestor = range.commonAncestorContainer;
-  if (!root.contains(ancestor.nodeType === 1 ? ancestor : ancestor.parentElement)) {
-    return null;
-  }
+  if (!sel || !root || sel.rangeCount === 0) return null;
 
   const anchorEl =
     (sel.anchorNode?.nodeType === 1
@@ -223,29 +226,116 @@ export function selectionPlainWithLatex(sel, root) {
     (sel.focusNode?.nodeType === 1
       ? /** @type {Element} */ (sel.focusNode)
       : sel.focusNode?.parentElement) || null;
-  const mathOnly =
+
+  const hostFromCaret =
     anchorEl?.closest?.('[data-me-soul-latex]') ||
-    focusEl?.closest?.('[data-me-soul-latex]');
+    focusEl?.closest?.('[data-me-soul-latex]') ||
+    null;
 
-  const frag = range.cloneContents();
-  const hasMath = !!(
-    frag.querySelector?.('[data-me-soul-latex], .me-soul-math-copytext, .math, mjx-container')
-  );
-
-  if (!hasMath) {
-    if (mathOnly && root.contains(mathOnly)) {
+  // Click formula then ⌘C (collapsed caret inside SVG/CHTML) — native copy is empty.
+  if (sel.isCollapsed) {
+    if (hostFromCaret && root.contains(hostFromCaret)) {
       return formatLatexForCopy(
-        mathOnly.getAttribute('data-me-soul-latex') || '',
-        mathOnly.getAttribute('data-me-soul-display') === '1'
+        hostFromCaret.getAttribute('data-me-soul-latex') || '',
+        hostFromCaret.getAttribute('data-me-soul-display') === '1'
       );
     }
     return null;
+  }
+
+  const range = sel.getRangeAt(0);
+  const ancestor = range.commonAncestorContainer;
+  const ancestorEl =
+    ancestor.nodeType === 1
+      ? /** @type {Element} */ (ancestor)
+      : ancestor.parentElement;
+  if (!ancestorEl || !root.contains(ancestorEl)) {
+    // Selection may sit in SVG text under a math host still inside root
+    if (hostFromCaret && root.contains(hostFromCaret)) {
+      return formatLatexForCopy(
+        hostFromCaret.getAttribute('data-me-soul-latex') || '',
+        hostFromCaret.getAttribute('data-me-soul-display') === '1'
+      );
+    }
+    return null;
+  }
+
+  const frag = range.cloneContents();
+  const hasMath = !!(
+    frag.querySelector?.(
+      '[data-me-soul-latex], .me-soul-math-copytext, .math, mjx-container'
+    ) || hostFromCaret
+  );
+
+  if (!hasMath) return null;
+
+  // Selection only touched SVG glyphs — fragment has no math host, use caret host.
+  if (
+    hostFromCaret &&
+    root.contains(hostFromCaret) &&
+    !frag.querySelector?.(
+      '[data-me-soul-latex], .me-soul-math-copytext, .math, mjx-container'
+    )
+  ) {
+    // If the range is entirely inside one formula, copy just that TeX.
+    const startHost = range.startContainer?.parentElement?.closest?.(
+      '[data-me-soul-latex]'
+    );
+    const endHost = range.endContainer?.parentElement?.closest?.(
+      '[data-me-soul-latex]'
+    );
+    if (startHost && startHost === endHost) {
+      return formatLatexForCopy(
+        startHost.getAttribute('data-me-soul-latex') || '',
+        startHost.getAttribute('data-me-soul-display') === '1'
+      );
+    }
   }
 
   return flattenDomLatexToText(frag);
 }
 
 /**
+ * Paint normal text-like selection highlight on formulas under the current range.
+ * MathJax SVG itself rarely shows ::selection — we mirror it onto the host.
+ * @param {ParentNode} root
+ */
+export function syncMathSelectionHighlight(root) {
+  if (!root?.querySelectorAll) return;
+  const hosts = root.querySelectorAll('[data-me-soul-latex]');
+  hosts.forEach((h) => h.classList?.remove?.('is-math-selected'));
+
+  const sel = typeof window !== 'undefined' ? window.getSelection?.() : null;
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+
+  let range;
+  try {
+    range = sel.getRangeAt(0);
+  } catch {
+    return;
+  }
+
+  hosts.forEach((host) => {
+    if (!root.contains?.(host)) return;
+    try {
+      if (typeof range.intersectsNode === 'function') {
+        if (range.intersectsNode(host)) host.classList.add('is-math-selected');
+        return;
+      }
+    } catch {
+      /* intersectsNode can throw on detached nodes */
+    }
+    // Fallback: caret/endpoints inside host
+    const a = sel.anchorNode;
+    const f = sel.focusNode;
+    if (host.contains?.(a) || host.contains?.(f)) {
+      host.classList.add('is-math-selected');
+    }
+  });
+}
+
+/**
+ * Wire selection highlight + ⌘C → TeX.
  * @param {{
  *   copyText?: (text: string) => Promise<boolean> | boolean,
  *   onCopied?: (text: string) => void,
@@ -254,45 +344,65 @@ export function selectionPlainWithLatex(sel, root) {
 export function wireMathCopy(root, opts = {}) {
   if (!root || typeof root.addEventListener !== 'function') return;
   const el = /** @type {HTMLElement} */ (root);
+
   if (el.dataset?.meSoulMathCopyWired === '1') return;
   if (el.dataset) el.dataset.meSoulMathCopyWired = '1';
 
-  el.addEventListener('copy', (ev) => {
-    try {
-      const sel = window.getSelection?.();
-      const text = selectionPlainWithLatex(sel, el);
-      if (text == null) return;
-      ev.clipboardData?.setData('text/plain', text);
-      ev.preventDefault();
-    } catch {
-      /* native copy */
-    }
-  });
+  // Capture: Electron/Obsidian sometimes handle copy before bubble reaches us.
+  el.addEventListener(
+    'copy',
+    (ev) => {
+      try {
+        const sel = window.getSelection?.();
+        const text = selectionPlainWithLatex(sel, el);
+        if (text == null) return;
+        ev.clipboardData?.setData('text/plain', text);
+        ev.preventDefault();
+      } catch {
+        /* native copy */
+      }
+    },
+    true
+  );
 
+  const onSelChange = () => {
+    try {
+      syncMathSelectionHighlight(el);
+    } catch {
+      /* */
+    }
+  };
+  document.addEventListener('selectionchange', onSelChange);
+  // Best-effort cleanup when the message node is removed
+  if (typeof MutationObserver === 'function') {
+    const mo = new MutationObserver(() => {
+      if (!el.isConnected) {
+        document.removeEventListener('selectionchange', onSelChange);
+        mo.disconnect();
+      }
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Double-click formula → select whole TeX (like double-clicking a word)
   el.addEventListener('dblclick', (ev) => {
     const host = /** @type {Element | null} */ (
       /** @type {Element} */ (ev.target)?.closest?.('[data-me-soul-latex]')
     );
     if (!host || !el.contains(host)) return;
+    const tex = host.querySelector?.('.me-soul-math-copytext');
+    if (!tex) return;
     ev.preventDefault();
-    const text = formatLatexForCopy(
-      host.getAttribute('data-me-soul-latex') || '',
-      host.getAttribute('data-me-soul-display') === '1'
-    );
-    if (!text) return;
-    void (async () => {
-      let ok = false;
-      try {
-        if (opts.copyText) ok = !!(await opts.copyText(text));
-        else if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-          ok = true;
-        }
-      } catch {
-        ok = false;
-      }
-      if (ok) opts.onCopied?.(text);
-    })();
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(tex);
+      const sel = window.getSelection?.();
+      sel?.removeAllRanges?.();
+      sel?.addRange?.(range);
+      host.classList.add('is-math-selected');
+    } catch {
+      /* */
+    }
   });
 }
 
@@ -403,6 +513,17 @@ export async function renderMarkdownWithMath(opts) {
     wireMathCopy(el, { copyText, onCopied });
   } catch {
     /* non-fatal */
+  }
+
+  // MathJax may finish a frame late — re-annotate once so copy metadata sticks.
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      try {
+        annotateRenderedMath(el, md);
+      } catch {
+        /* */
+      }
+    });
   }
 }
 

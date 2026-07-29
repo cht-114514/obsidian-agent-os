@@ -7,6 +7,7 @@ import {
   buildGrokChildEnv,
   buildGrokSpawnPlan,
   buildThirdPartyConfigToml,
+  inferThirdPartyApiBackend,
   normalizeOpenAiBaseUrl,
   normalizeReasoningEffort,
   formatModelDisplayName,
@@ -127,6 +128,25 @@ describe('grok-runtime', () => {
     });
     assert.match(t, /stream_tool_calls = false/);
     assert.match(t, /api_backend = "chat_completions"/);
+  });
+
+  it('inferThirdPartyApiBackend picks messages for Claude', () => {
+    assert.equal(inferThirdPartyApiBackend('claude-opus-5'), 'messages');
+    assert.equal(inferThirdPartyApiBackend('anthropic/claude-sonnet-4'), 'messages');
+    assert.equal(inferThirdPartyApiBackend('gpt-5.6-luna'), 'chat_completions');
+  });
+
+  it('buildThirdPartyConfigToml uses messages backend for Claude', () => {
+    const t = buildThirdPartyConfigToml({
+      model: 'claude-opus-5',
+      baseUrl: 'https://www.dmxapi.cn/v1',
+      apiKey: 'sk-x',
+      label: 'Opus',
+    });
+    assert.match(t, /api_backend = "messages"/);
+    assert.match(t, /anthropic-version/);
+    assert.match(t, /x-api-key/);
+    assert.doesNotMatch(t, /api_backend = "chat_completions"/);
   });
 
   it('buildThirdPartyConfigToml quotes safely', () => {

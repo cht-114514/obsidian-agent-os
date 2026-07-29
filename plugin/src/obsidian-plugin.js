@@ -79,6 +79,10 @@ class MeSoulView extends ItemView {
   async reloadSession() {
     await this._mount?.reloadSession?.();
   }
+
+  async consumeQueuedLaunch() {
+    await this._mount?.consumeQueuedLaunch?.();
+  }
 }
 
 /** Markdown code-block host for homepage embed */
@@ -120,6 +124,8 @@ export default class MeSoulPlugin extends Plugin {
     await this.loadSettings();
     this.controller = new MeSoulController(this.settings);
     this.acp = null;
+    /** @type {{ skillId: string, text?: string, autoSend?: boolean } | null} */
+    this._pendingChatLaunch = null;
     this.commandBar = createCommandBarController(this.app, this, {
       Notice,
       MarkdownRenderer,
@@ -444,6 +450,29 @@ export default class MeSoulPlugin extends Plugin {
     return this.acp;
   }
 
+  /**
+   * Queue a fullscreen-chat skill launch (from IDE command bar).
+   * @param {{ skillId: string, text?: string, autoSend?: boolean }} launch
+   */
+  queueChatLaunch(launch) {
+    if (!launch?.skillId) return;
+    this._pendingChatLaunch = {
+      skillId: String(launch.skillId),
+      text: String(launch.text || ''),
+      autoSend: launch.autoSend !== false,
+    };
+  }
+
+  /**
+   * Take and clear the pending launch once.
+   * @returns {{ skillId: string, text: string, autoSend: boolean } | null}
+   */
+  takeChatLaunch() {
+    const q = this._pendingChatLaunch;
+    this._pendingChatLaunch = null;
+    return q;
+  }
+
   async openHome() {
     const homePath = this.settings.homePath || '00-首页.md';
     const file = this.app.vault.getAbstractFileByPath(homePath);
@@ -498,6 +527,8 @@ export default class MeSoulPlugin extends Plugin {
     if (reusedExisting) {
       await leaf.view?.reloadSession?.();
     }
+    // Command-bar may have queued a /skill — run it in fullscreen chat.
+    await leaf.view?.consumeQueuedLaunch?.();
   }
 
   async loadSettings() {
@@ -556,6 +587,7 @@ export default class MeSoulPlugin extends Plugin {
           'me-apply-pending',
           'me-apply-insight',
           'me-soul-promote',
+          'me-imagine',
           'memorized',
           'me-reindex', // alias of memorized
         ],
@@ -571,6 +603,7 @@ export default class MeSoulPlugin extends Plugin {
       'me-apply-pending',
       'me-apply-insight',
       'me-soul-promote',
+      'me-imagine',
       'memorized',
       'me-reindex',
     ];

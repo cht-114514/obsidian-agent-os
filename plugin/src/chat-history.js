@@ -161,6 +161,57 @@ export function appendMessage(session, msg) {
 }
 
 /**
+ * Drop `messageId` and everything after it. Used by edit / resend so the UI
+ * transcript and vault session stay aligned before a retry.
+ *
+ * @param {ChatSession} session
+ * @param {string} messageId
+ * @returns {{ session: ChatSession, removed: ChatMessage | null, index: number }}
+ */
+export function truncateFromMessage(session, messageId) {
+  const id = String(messageId || '').trim();
+  const messages = session?.messages || [];
+  if (!id) {
+    return { session: session || createEmptySession(), removed: null, index: -1 };
+  }
+  const index = messages.findIndex((m) => m && m.id === id);
+  if (index < 0) {
+    return { session: session || createEmptySession(), removed: null, index: -1 };
+  }
+  return {
+    session: {
+      version: 1,
+      id: session?.id || newId('ses'),
+      updatedAt: new Date().toISOString(),
+      messages: messages.slice(0, index),
+    },
+    removed: messages[index],
+    index,
+  };
+}
+
+/**
+ * Find the nearest prior user turn for an agent message (or last user if id missing).
+ * @param {ChatSession} session
+ * @param {string} [fromMessageId]
+ * @returns {ChatMessage | null}
+ */
+export function findPrecedingUserMessage(session, fromMessageId) {
+  const messages = session?.messages || [];
+  if (!messages.length) return null;
+  const id = String(fromMessageId || '').trim();
+  let start = messages.length - 1;
+  if (id) {
+    const idx = messages.findIndex((m) => m && m.id === id);
+    if (idx >= 0) start = idx;
+  }
+  for (let i = start; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return messages[i];
+  }
+  return null;
+}
+
+/**
  * Filename-safe timestamp for archives.
  * @param {Date} [d]
  */
