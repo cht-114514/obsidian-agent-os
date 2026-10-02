@@ -37,6 +37,9 @@ await esbuild.build({
     'ws',
   ],
   logLevel: 'info',
+  define: {
+    __AOS_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16)),
+  },
 });
 
 let bundle = readFileSync(join(outDir, 'main.js'), 'utf8');

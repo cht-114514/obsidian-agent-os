@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   formatRelativeTime,
   historyToTurns,
+  mergeTranscript,
   sessionBucket,
   stripInjectedContext,
 } from '../src/ui/turns.js';
@@ -52,6 +53,31 @@ describe('historyToTurns', () => {
     assert.equal(turns[1].activity.reasoning, '先看十分位');
     assert.equal(workHeadline(turns[1].activity), '2 次工具调用');
   });
+
+  it('joins later assistant fragments and tool batches into that same turn', () => {
+    const turns = historyToTurns({
+      messages: [
+        { id: 'u1', role: 'user', text: '搜一下', timestamp: 1_000 },
+        { id: 'a1', role: 'assistant', text: '先并行拉几路。', timestamp: 2_000 },
+        { role: 'tool', toolName: 'exec', toolCallId: 'c1', title: 'exa', timestamp: 2_100 },
+        { role: 'tool', toolName: 'exec', toolCallId: 'c2', title: 'exa', timestamp: 2_200 },
+        { id: 'a2', role: 'assistant', text: '再补一路。', timestamp: 3_000 },
+        { role: 'tool', toolName: 'search', toolCallId: 'c3', title: 'web', timestamp: 3_100 },
+        { role: 'tool', toolName: 'search', toolCallId: 'c4', timestamp: 3_200 },
+        { id: 'a3', role: 'assistant', text: '', timestamp: 4_000 },
+        { id: 'u2', role: 'user', text: '下一问', timestamp: 5_000 },
+        { id: 'a4', role: 'assistant', text: '好。', timestamp: 6_000 },
+      ],
+    });
+    assert.equal(turns.length, 4);
+    assert.equal(turns[1].id, 'a1');
+    assert.equal(turns[1].text, '先并行拉几路。\n\n再补一路。');
+    assert.equal(turns[1].activity.tools.length, 4);
+    assert.equal(turns[1].activity.tools[3].name, 'search');
+    assert.equal(turns[2].text, '下一问');
+    assert.equal(turns[3].text, '好。');
+    assert.equal(turns[3].activity.tools.length, 0);
+  });
 });
 
 describe('time and sessions', () => {
@@ -100,6 +126,15 @@ describe('work run copy', () => {
     assert.equal(describeTool({ name: 'exec', phase: 'done', title: 'npm test' }).label, '已执行 npm test');
     assert.equal(describeTool({ name: 'read', phase: 'start', title: 'a.md' }).verb, '正在读取');
     assert.equal(formatDuration(4 * 60_000 + 52_000), '4 分 52 秒');
+    assert.equal(formatDuration(400), '不到 1 秒');
+    assert.equal(formatDuration(0), '');
+    const quick = {
+      tools: [
+        { name: 'exec', phase: 'done', startedAt: 1_000, endedAt: 1_400 },
+        { name: 'search', phase: 'done', startedAt: 1_400, endedAt: 1_800 },
+      ],
+    };
+    assert.equal(workHeadline(quick), '已工作 不到 1 秒 · 2 次工具调用');
     const activity = {
       tools: [
         { name: 'read', phase: 'done', title: 'a.md', startedAt: 1_000, endedAt: 20_000 },
@@ -108,6 +143,57 @@ describe('work run copy', () => {
     };
     assert.equal(workHeadline(activity), '已工作 4 分 52 秒 · 2 次工具调用');
     assert.match(workHeadline({ tools: [], status: '思考中' }, { streaming: true }), /思考中/);
+  });
+});
+
+describe('mergeTranscript', () => {
+  const localUser = { id: 'u-local', role: 'user', text: '离线写的', ts: 5000, turnId: 't-off' };
+  const localDraft = {
+    id: 'a-local',
+    role: 'assistant',
+    text: '待发出（已排队）',
+    ts: 5000,
+    turnId: 't-off',
+    turnStatus: 'queued',
+  };
+  const remoteOld = { id: 'h1', role: 'user', text: '上一条', ts: 1000, turnId: 'h1' };
+  const remoteOldReply = { id: 'h2', role: 'assistant', text: '好的', ts: 2000, turnId: 'h2' };
+  const remoteEcho = { id: 'h3', role: 'user', text: '离线写的', ts: 5001, turnId: 'h3' };
+  const remoteReply = { id: 'h4', role: 'assistant', text: '收到', ts: 6000, turnId: 'h4' };
+
+  it('keeps a local message the Mac has not seen yet', () => {
+    const merged = mergeTranscript([remoteOld, remoteOldReply, localUser, localDraft], [
+      remoteOld,
+      remoteOldReply,
+    ]);
+    assert.deepEqual(
+      merged.map((row) => row.text),
+      ['上一条', '好的', '离线写的', '待发出（已排队）']
+    );
+  });
+
+  it('adopts the Mac reply for a turn the Mac did see, keeping the local id', () => {
+    const merged = mergeTranscript([localUser, localDraft], [remoteEcho, remoteReply]);
+    assert.equal(merged.length, 2);
+    assert.equal(merged[0].id, 'u-local');
+    assert.equal(merged[0].turnId, 't-off');
+    assert.equal(merged[0].role, 'user');
+    assert.equal(merged[1].id, 'a-local');
+    assert.equal(merged[1].turnId, 't-off');
+    assert.equal(merged[1].text, '收到');
+  });
+
+  it('never drops a queued message when history is empty or partial', () => {
+    assert.deepEqual(mergeTranscript([localUser, localDraft], []), [localUser, localDraft]);
+    const partial = mergeTranscript([remoteOld, remoteOldReply, localUser, localDraft], [remoteOld]);
+    assert.equal(partial.length, 4);
+    assert.ok(partial.some((row) => row.turnId === 't-off'));
+  });
+
+  it('does not duplicate a remote message that is also local', () => {
+    const merged = mergeTranscript([remoteOld, localUser, localDraft], [remoteOld, remoteEcho, remoteReply]);
+    assert.equal(merged.filter((row) => row.role === 'user' && row.text === '离线写的').length, 1);
+    assert.equal(merged.filter((row) => row.text === '上一条').length, 1);
   });
 });
 

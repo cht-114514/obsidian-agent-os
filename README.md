@@ -2,11 +2,21 @@
 
 > **Public beta / 测试版** — not a 1.0 release. APIs and vault layout may change.
 
-**Vault-native agent operating system** for [Obsidian](https://obsidian.md): an OpenClaw-style chat UI, soul loops (thoughts / insights / care), digest + confirm gates, and **vector wiki memory**. The kernel is a remote [OpenClaw](https://openclaw.ai) gateway reached over Tailscale. The plugin does not bundle or spawn the OpenClaw CLI.
+**Vault-native agent operating system** for [Obsidian](https://obsidian.md): an OpenClaw-style chat UI, soul loops (thoughts / insights / care), digest + confirm gates, and **vector wiki memory**. The kernel is a remote [OpenClaw](https://openclaw.ai) gateway. The plugin does not bundle or spawn the OpenClaw CLI.
+
+Two entry points, same kernel:
 
 ```
 Vault (Markdown body)  ←→  Obsidian Agent OS (face)  ←→  OpenClaw gateway (kernel)
+                                    ▲
+                        Mac service (durable turns, notes)   ← phone over fixed HTTPS
 ```
+
+- **Desktop / legacy** — the plugin talks to the gateway socket directly (Tailscale address).
+- **Phone (recommended)** — the plugin talks to a small Mac service over a fixed HTTPS
+  domain. Messages are saved on the phone first, then accepted by the Mac's SQLite queue,
+  so a locked screen, a lost socket, or a killed WebView never loses a turn. See
+  [docs/mobile-stability.md](./docs/mobile-stability.md).
 
 Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS**.
 
@@ -93,9 +103,11 @@ Enable **Obsidian Agent OS** under Obsidian → Settings → Community plugins.
 | Path | Role |
 |------|------|
 | `plugin/` | Obsidian plugin source → `plugin/dist/` |
+| `service/` | Mac-side durable turn service (SQLite queue, device pairing, notes) |
 | `packages/protocol` | Fence parser, confirm SM, write policy, care policy |
 | `skills/*` | CLI skills (`me-digest`, insight, care, …) |
 | `templates/vault/` | Generic vault seed files |
+| `docs/mobile-stability.md` | Phone entry point: design, ops, failure behaviour |
 | `NOTICE.md` | Cola credit + beta disclaimer |
 
 Default write policy: free write under `agent-inbox/`; human zones  
@@ -107,10 +119,20 @@ Default write policy: free write under `agent-inbox/`; human zones
 ```bash
 npm test
 npm run build:plugin
+
+# Mac service
+npm run service:serve          # foreground
+npm run service:pair           # one-time pairing code
+npm run service:status         # kernel, queue, sessions, vault
 ```
+
+See [docs/mobile-stability.md](./docs/mobile-stability.md) for the phone entry point,
+failure behaviour, and how to fall back to the legacy socket.
 
 ## Versioning
 
+- **0.3.x-beta** — durable Mac service: fixed HTTPS entry, device pairing, SQLite turn
+  queue, restart reconciliation, notes + confirmation cards
 - **0.2.0-beta** — OpenClaw gateway kernel, phone chat UI
 - **0.1.x** — public beta on the local Grok / ACP runtime
 - Later: polish, Community Plugin store packaging if/when ready

@@ -1,0 +1,14 @@
+{
+  "name": "@obsidian-agent-os/service",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Mac-side durable receiver and executor for Obsidian Agent OS",
+  "bin": {
+    "agent-os": "./bin/agent-os.mjs"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "start": "node src/server.js"
+  }
+}

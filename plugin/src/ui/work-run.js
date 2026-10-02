@@ -41,7 +41,8 @@ export function describeTool(tool) {
  * @param {number} ms
  */
 export function formatDuration(ms) {
-  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  if (ms < 1000) return '不到 1 秒';
   const total = Math.round(ms / 1000);
   if (total < 60) return `${total} 秒`;
   const m = Math.floor(total / 60);
@@ -76,28 +77,26 @@ export function workHeadline(activity, opts = {}) {
   return dur ? `已工作 ${dur} · ${calls}` : calls;
 }
 
-function phaseMark(phase) {
-  if (phase === 'done') return '完成';
-  if (phase === 'error') return '失败';
-  return '进行中';
-}
-
 /**
  * @param {HTMLElement} parent Obsidian-enhanced element
  * @param {any} activity
  * @param {{ streaming?: boolean }} [opts]
  */
 export function renderWorkRun(parent, activity, opts = {}) {
+  const wasLive = parent.dataset?.aosLive === '1';
   const wasOpen = !!parent.querySelector?.('details.aos-work')?.open;
   parent.empty();
   const tools = activity?.tools || [];
   const reasoning = String(activity?.reasoning || '').trim();
   const streaming = !!opts.streaming;
+  if (parent.dataset) parent.dataset.aosLive = streaming ? '1' : '';
   const headline = workHeadline(activity, { streaming });
   if (!headline && !tools.length && !reasoning) return;
 
   const details = parent.createEl('details', { cls: `aos-work${streaming ? ' is-live' : ''}` });
-  if (streaming || wasOpen) details.setAttr('open', 'open');
+  // Stay open while the turn is running. Collapse when it finishes.
+  // A manual open after that survives later refreshes.
+  if (streaming || (wasOpen && !wasLive)) details.setAttr('open', 'open');
   const summary = details.createEl('summary', { cls: 'aos-work-summary' });
   if (streaming) summary.createSpan({ cls: 'aos-live-dot' });
   summary.createSpan({ cls: 'aos-work-title', text: headline });
@@ -108,9 +107,9 @@ export function renderWorkRun(parent, activity, opts = {}) {
     for (const tool of tools) {
       const described = describeTool(tool);
       const row = list.createDiv({ cls: `aos-work-tool is-${described.phase}` });
+      row.createSpan({ cls: 'aos-work-mark' });
       row.createSpan({ cls: 'aos-work-verb', text: described.verb });
       if (described.target) row.createSpan({ cls: 'aos-work-target', text: described.target });
-      row.createSpan({ cls: 'aos-work-phase', text: phaseMark(described.phase) });
     }
   }
   if (reasoning) {

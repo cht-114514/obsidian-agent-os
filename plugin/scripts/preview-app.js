@@ -67,9 +67,24 @@ function fakePlugin(mode) {
       agentId: 'main',
       quiet: false,
       skills: previewSkills.map((skill) => skill.id),
-      hideMobileNavbar: false,
+      hideMobileNavbar: (() => {
+        const q = new URLSearchParams(
+          location.hash.includes('&') ? location.hash.slice(location.hash.indexOf('&') + 1) : location.search.slice(1)
+        );
+        return q.get('hideNav') === '1';
+      })(),
     },
     kernelModels: [{ id: 'default', name: 'Default' }],
+    thinkingChoices: () => [
+      { id: 'off', label: '关闭' },
+      { id: 'low', label: '低' },
+      { id: 'high', label: '高' },
+    ],
+    resolveOutgoingThinking: () => 'off',
+    connectionPrefs: () => ({ model: 'default' }),
+    ensureOperator: async () => null,
+    takeChatLaunch: () => null,
+    sessionStore: () => memorySessionStore,
     operator: {
       status: {
         state: mode === 'pairing' ? 'pairing' : live ? 'live' : 'offline',
@@ -77,17 +92,66 @@ function fakePlugin(mode) {
         approveCommand: mode === 'pairing' ? 'openclaw devices approve demo' : '',
       },
       onStatus: () => () => {},
+      prompt: async () => ({ runId: 'preview' }),
     },
-    thinkingChoices: () => [
-      { id: 'low', label: '低' },
-      { id: 'high', label: '高' },
-    ],
-    resolveOutgoingThinking: () => 'low',
-    connectionPrefs: () => ({ model: 'default' }),
-    ensureOperator: async () => null,
-    takeChatLaunch: () => null,
   };
 }
+
+const memorySessionStore = (() => {
+  const pending = {};
+  const transcripts = {};
+  return {
+    loadTranscript: (key) => transcripts[key] || [],
+    saveTranscript(key, rows) {
+      transcripts[key] = rows;
+    },
+    saveSessions() {},
+    saveActiveKey() {},
+    loadSessions: () => [],
+    loadActiveKey: () => '',
+    listPending: (key) => Object.values(pending).filter((row) => !key || row.sessionKey === key),
+    pendingFor: (id) => pending[id] || null,
+    activePending(key) {
+      return this.listPending(key).filter((row) => row.status !== 'sent');
+    },
+    saveTurnWithPending(sessionKey, messages, record) {
+      pending[record.turnId] = { status: 'queued', attempts: 0, ...record, sessionKey };
+      transcripts[sessionKey] = messages;
+      return { ok: true, record: pending[record.turnId] };
+    },
+    markSending(id) {
+      if (pending[id]) pending[id].status = 'sending';
+      return { ok: true };
+    },
+    markSent(id) {
+      if (pending[id]) pending[id].status = 'sent';
+      return { ok: true };
+    },
+    markUnknown(id) {
+      if (pending[id]) pending[id].status = 'unknown';
+      return { ok: true };
+    },
+    markFailed(id, reason) {
+      if (pending[id]) {
+        pending[id].status = 'failed';
+        pending[id].reason = reason || '';
+      }
+      return { ok: true };
+    },
+    markPending(id, patch) {
+      if (pending[id]) Object.assign(pending[id], patch || {});
+      return pending[id] || null;
+    },
+    markQueuedForRetry(id) {
+      if (pending[id]) pending[id].status = 'queued';
+      return { ok: true };
+    },
+    dropTurn(id) {
+      delete pending[id];
+      return { ok: true };
+    },
+  };
+})();
 
 const mode = (location.hash || '#thread').slice(1).split('&')[0] || 'thread';
 const theme = new URLSearchParams(location.hash.slice(1).includes('&') ? location.hash.slice(location.hash.indexOf('&') + 1) : location.search).get('theme');
@@ -113,5 +177,8 @@ mountAgentApp(host, {
     render: async (_app, markdown, el) => {
       el.innerHTML = miniMarkdown(markdown);
     },
+  },
+  Notice: (message) => {
+    document.body.dataset.notice = String(message || '');
   },
 });

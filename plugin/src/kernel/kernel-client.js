@@ -133,6 +133,7 @@ export class KernelClient {
     this.connectPromise = null;
     this.lastFrameAt = 0;
     this.heartbeatTimer = null;
+    this.handshakeReady = false;
   }
 
   socketOpen() {
@@ -166,8 +167,8 @@ export class KernelClient {
    * @param {{ force?: boolean }} [opts]
    */
   connect(opts = {}) {
-    if (this.connectPromise && !opts.force) return this.connectPromise;
-    const run = this._connect();
+    if (this.connectPromise) return this.connectPromise;
+    const run = this._connect(opts);
     const tracked = run.finally(() => {
       if (this.connectPromise === tracked) this.connectPromise = null;
     });
@@ -175,14 +176,17 @@ export class KernelClient {
     return tracked;
   }
 
-  async _connect() {
+  async _connect(_opts = {}) {
     this.closedByUser = false;
     const generation = ++this.generation;
     clearTimeout(this.reconnectTimer);
     this.reconnectPending = false;
     this.stopHeartbeat();
+    this.handshakeReady = false;
     this.setStatus({ state: 'connecting', message: '正在连接 OpenClaw…', requestId: '', approveCommand: '' });
-    this.socket?.close();
+    const prev = this.socket;
+    if (prev) prev.close();
+    this.socket = null;
     const socket = new GatewaySocket({
       WebSocketImpl: this.WebSocketImpl,
       onFrame: () => {
@@ -196,7 +200,9 @@ export class KernelClient {
         this.scheduleReconnect('事件序号断开，正在重连…');
       },
       onClose: () => {
+        this.handshakeReady = false;
         if (generation !== this.generation || this.closedByUser) return;
+        if (this.socket !== socket) return;
         if (this.status.state === 'live' || this.status.state === 'connecting') {
           this.scheduleReconnect('连接已断开');
         }
@@ -204,34 +210,79 @@ export class KernelClient {
     });
     this.socket = socket;
     try {
-      await socket.open(this.url, 8000);
-      const challenge = await socket.nextEvent('connect.challenge', 8000);
-      const nonce = challenge.payload?.nonce;
-      const signedAtMs = challenge.payload?.ts;
-      if (typeof signedAtMs !== 'number' || !nonce) {
-        throw new Error('gateway challenge missing ts/nonce');
+      await this._handshake(socket, generation);
+      return this.hello;
+    } catch (error) {
+      // Always release the socket we just built, so a dead half-open
+      // connection can never be mistaken for a live one later.
+      if (this.socket === socket) this.socket = null;
+      socket.close();
+      if (generation !== this.generation) throw error;
+      this.handshakeReady = false;
+      const pairing = pairingFromError(error);
+      if (pairing) {
+        this.setStatus({
+          state: 'pairing',
+          message: pairing.message || '需要在 Mac mini 上批准这台设备',
+          requestId: pairing.requestId || '',
+          approveCommand: pairing.approveCommand,
+        });
+        return null;
       }
-      const payload = buildDeviceAuthPayloadV3({
-        deviceId: this.identity.deviceId,
-        clientId: this.clientId,
-        clientMode: this.clientMode,
-        role: this.role,
-        scopes: this.scopes,
-        signedAtMs,
-        token: this.token,
-        nonce,
-        platform: this.platform,
-        deviceFamily: this.deviceFamily,
-      });
-      const signature = signDevicePayload(this.identity, payload);
-      const auth = { token: this.token };
-      if (this.deviceToken) auth.deviceToken = this.deviceToken;
-      const hello = await socket.request('connect', {
+      this.setStatus({ state: 'offline', message: error?.message || '连接失败' });
+      if (this.retryable(error)) this.scheduleReconnect(error?.message || '连接失败');
+      throw error;
+    }
+  }
+
+  /** A transport-level failure is worth retrying; a rejection is not. */
+  retryable(error) {
+    if (error?.retryable === true) return true;
+    const code = error?.code || '';
+    if (code === 'CONNECTION_REPLACED' || code === 'CONNECTION_LOST' || code === 'NOT_CONNECTED') return true;
+    if (code === 'TIMEOUT' || code === 'IDLE_TIMEOUT') return true;
+    const message = error?.message || '';
+    return /连接超时|无法连接|socket closed|not open|timed out/i.test(message);
+  }
+
+  /**
+   * One bounded connect attempt: socket open → challenge → signed connect.
+   * Every stage has its own deadline, so this either settles or fails.
+   */
+  async _handshake(socket, generation) {
+    const isCurrent = () => generation === this.generation && !socket.closed;
+    await socket.open(this.url, 8000);
+    if (!isCurrent()) return null;
+    const challenge = await socket.nextEvent('connect.challenge', 8000);
+    if (!isCurrent()) return null;
+    const nonce = challenge.payload?.nonce;
+    const signedAtMs = challenge.payload?.ts;
+    if (typeof signedAtMs !== 'number' || !nonce) {
+      throw new Error('gateway challenge missing ts/nonce');
+    }
+    const payload = buildDeviceAuthPayloadV3({
+      deviceId: this.identity.deviceId,
+      clientId: this.clientId,
+      clientMode: this.clientMode,
+      role: this.role,
+      scopes: this.scopes,
+      signedAtMs,
+      token: this.token,
+      nonce,
+      platform: this.platform,
+      deviceFamily: this.deviceFamily,
+    });
+    const signature = signDevicePayload(this.identity, payload);
+    const auth = { token: this.token };
+    if (this.deviceToken) auth.deviceToken = this.deviceToken;
+    const hello = await socket.request(
+      'connect',
+      {
         minProtocol: 4,
         maxProtocol: 4,
         client: {
           id: this.clientId,
-          version: '0.2.0-beta',
+          version: '0.3.0',
           platform: this.platform,
           deviceFamily: this.deviceFamily,
           mode: this.clientMode,
@@ -249,31 +300,18 @@ export class KernelClient {
           signedAt: signedAtMs,
           nonce,
         },
-      }, 10000);
-      if (generation !== this.generation) return hello;
-      this.hello = hello;
-      if (hello?.auth?.deviceToken) this.deviceToken = hello.auth.deviceToken;
-      this.reconnectAttempt = 0;
-      this.lastFrameAt = Date.now();
-      this.setStatus({ state: 'live', message: '已连接', deviceToken: this.deviceToken });
-      this.startHeartbeat();
-      return hello;
-    } catch (error) {
-      if (generation !== this.generation) throw error;
-      const pairing = pairingFromError(error);
-      if (pairing) {
-        this.setStatus({
-          state: 'pairing',
-          message: pairing.message || '需要在 Mac mini 上批准这台设备',
-          requestId: pairing.requestId || '',
-          approveCommand: pairing.approveCommand,
-        });
-        return null;
-      }
-      this.setStatus({ state: 'offline', message: error?.message || '连接失败' });
-      this.scheduleReconnect(error?.message || '连接失败');
-      throw error;
-    }
+      },
+      10000
+    );
+    if (!isCurrent()) return null;
+    this.hello = hello;
+    if (hello?.auth?.deviceToken) this.deviceToken = hello.auth.deviceToken;
+    this.reconnectAttempt = 0;
+    this.lastFrameAt = Date.now();
+    this.handshakeReady = true;
+    this.setStatus({ state: 'live', message: '已连接', deviceToken: this.deviceToken });
+    this.startHeartbeat();
+    return hello;
   }
 
   scheduleReconnect(message) {
@@ -297,13 +335,15 @@ export class KernelClient {
     clearTimeout(this.reconnectTimer);
     this.reconnectPending = false;
     this.stopHeartbeat();
+    this.handshakeReady = false;
+    this.socket?.rejectAllPending?.('已断开');
     this.socket?.close();
     this.socket = null;
     this.setStatus({ state: 'offline', message: '已断开' });
   }
 
   request(method, params, timeoutMs) {
-    if (!this.socketOpen()) {
+    if (!this.handshakeReady || this.status.state !== 'live' || !this.socketOpen()) {
       const error = new Error('OpenClaw 未连接');
       error.code = 'NOT_CONNECTED';
       return Promise.reject(error);
@@ -338,7 +378,30 @@ export class KernelClient {
     }
     if (this.isLive && (await this.probe(opts.probeMs || 3500))) return true;
     this.reconnectAttempt = 0;
-    await withTimeout(this.connect({ force: true }).catch(() => {}), opts.connectMs || 12000);
+    await this.boundedConnect(opts.connectMs || 12000);
+    return this.isLive;
+  }
+
+  /**
+   * Connect, but never let a slow handshake hold the caller (or the shared
+   * `connectPromise`) forever. On timeout the half-open socket is aborted,
+   * which settles `_connect` so the next attempt starts clean.
+   * @returns {Promise<boolean>} true when live afterwards
+   */
+  async boundedConnect(ms = 12000) {
+    const attempt = this.connect().catch(() => {});
+    const timeout = new Promise((resolve) => setTimeout(resolve, ms));
+    const winner = await Promise.race([attempt.then(() => 'done'), timeout.then(() => 'timeout')]);
+    if (winner === 'timeout' && this.status.state !== 'live') {
+      // Force the in-flight handshake to unwind instead of leaking a promise
+      // that every later `connect()` would join.
+      const socket = this.socket;
+      this.socket = null;
+      socket?.close();
+      this.connectPromise = null;
+      this.handshakeReady = false;
+      return false;
+    }
     return this.isLive;
   }
 
@@ -361,7 +424,8 @@ export class KernelClient {
     if (await this.probe(4000)) return;
     if (this.status.state !== 'live') return;
     this.reconnectAttempt = 0;
-    await this.connect({ force: true }).catch(() => {});
+    if (this.connectPromise) return;
+    await this.connect().catch(() => {});
   }
 
   async listSessions() {
@@ -407,6 +471,29 @@ export class KernelClient {
    */
   async prompt(opts) {
     const sessionKey = opts.sessionKey;
+    const model = String(opts.model || '').trim();
+    const thinking = String(opts.thinking || '').trim();
+    if (model || thinking) {
+      try {
+        await this.request(
+          'sessions.patch',
+          {
+            key: sessionKey,
+            ...(model ? { model } : {}),
+            ...(thinking ? { thinkingLevel: thinking } : {}),
+          },
+          15000
+        );
+      } catch (error) {
+        const wrapped = new Error(
+          model
+            ? `没能切换到模型 ${model}：${error?.message || 'OpenClaw 拒绝了这次设置'}`
+            : `没能设置思考强度：${error?.message || 'OpenClaw 拒绝了这次设置'}`
+        );
+        wrapped.code = 'MODEL_REJECTED';
+        throw wrapped;
+      }
+    }
     let full = '';
     let runId = '';
     let activity = { reasoning: '', tools: [], status: '' };
@@ -485,7 +572,7 @@ export class KernelClient {
       this.request('chat.send', {
         sessionKey,
         message: opts.message,
-        idempotencyKey: newIdempotencyKey(),
+        idempotencyKey: opts.idempotencyKey || newIdempotencyKey(),
         ...(opts.thinking ? { thinking: opts.thinking } : {}),
       })
         .then((payload) => {

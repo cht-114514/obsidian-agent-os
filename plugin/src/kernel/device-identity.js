@@ -12,16 +12,31 @@ function bytesToHex(bytes) {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * base64url encode/decode without assuming a browser. Obsidian has `btoa`/`atob`;
+ * Node (the Mac gateway service reuses this module) does not.
+ */
+function toBase64(binary) {
+  if (typeof btoa === 'function') return btoa(binary);
+  return globalThis.Buffer.from(binary, 'binary').toString('base64');
+}
+
+function fromBase64(b64) {
+  if (typeof atob === 'function') return atob(b64);
+  return globalThis.Buffer.from(b64, 'base64').toString('binary');
+}
+
 function bytesToBase64Url(bytes) {
-  const bin = String.fromCharCode(...bytes);
-  const b64 = btoa(bin);
+  let bin = '';
+  for (const byte of bytes) bin += String.fromCharCode(byte);
+  const b64 = toBase64(bin);
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 function base64UrlToBytes(value) {
   const pad = value.length % 4 === 0 ? '' : '='.repeat(4 - (value.length % 4));
   const b64 = value.replace(/-/g, '+').replace(/_/g, '/') + pad;
-  const bin = atob(b64);
+  const bin = fromBase64(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
   return out;

@@ -67,7 +67,7 @@ export function groupSessions(sessions, opts = {}) {
 
 /**
  * @param {HTMLElement} el
- * @param {{ onNew: () => void, onSelect: (key: string) => void }} handlers
+ * @param {{ onNew: () => void, onSelect: (key: string) => void, onBack?: () => void }} handlers
  */
 export function mountSidebar(el, handlers) {
   el.empty();
@@ -90,6 +90,12 @@ export function mountSidebar(el, handlers) {
     attr: { type: 'search', placeholder: '搜索会话', 'aria-label': '搜索会话' },
   });
   const list = el.createDiv({ cls: 'aos-session-list' });
+  const foot = el.createDiv({ cls: 'aos-side-foot' });
+  foot.createEl('button', {
+    cls: 'aos-side-back',
+    text: '返回笔记',
+    attr: { type: 'button' },
+  }).onclick = () => handlers.onBack?.();
   let query = '';
   let last = null;
   search.addEventListener('input', () => {
@@ -110,7 +116,12 @@ export function mountSidebar(el, handlers) {
     list.empty();
     const groups = groupSessions(state.sessions, { query, now: state.now });
     if (!groups.length) {
-      list.createDiv({ cls: 'aos-session-empty', text: query ? '没有匹配的会话' : '还没有会话' });
+      const text = state.syncHint
+        ? '会话列表没有加载出来'
+        : query
+          ? '没有匹配的会话'
+          : '还没有会话';
+      list.createDiv({ cls: 'aos-session-empty', text });
       return;
     }
     for (const [title, rows] of groups) {
@@ -128,7 +139,7 @@ export function mountSidebar(el, handlers) {
         const meta = button.createDiv({ cls: 'aos-session-meta' });
         const when = formatRelativeTime(sessionTime(row), state.now);
         if (when) meta.createSpan({ text: when });
-        if (row.active || row.hasActiveRun) meta.createSpan({ cls: 'aos-session-dot' });
+        if (row.active || row.hasActiveRun || row.needsAttention) meta.createSpan({ cls: 'aos-session-dot' });
         button.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();

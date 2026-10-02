@@ -27,6 +27,9 @@ import {
   writeSecret,
 } from './kernel/device-identity.js';
 import { executeVaultCommand } from './kernel/vault-tools.js';
+import { createMemorySessionStore, createSessionStore } from './kernel/session-store.js';
+import { createServiceClient, normalizeServiceUrl } from './kernel/service-client.js';
+import { PairDeviceModal } from './ui/pair-modal.js';
 
 export const VIEW_TYPE = 'me-soul-chat';
 
@@ -69,7 +72,13 @@ class MeSoulView extends ItemView {
         this.leaf?.updateHeader?.();
       },
       onClose: () => this.leaf?.detach?.(),
+      onPairDevice: () => this.plugin.openPairModal(),
+      onReturnToNotes: () => this.plugin.returnFromChat(),
     });
+  }
+
+  async recover() {
+    await this._mount?.recover?.();
   }
 
   async onClose() {
@@ -90,6 +99,7 @@ export default class MeSoulPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     await this.publishSharedGateway();
+    await this.retireSharedCredentialIfPaired();
     this.operator = null;
     this.vaultNode = null;
     this.kernelModels = [];
@@ -176,21 +186,56 @@ export default class MeSoulPlugin extends Plugin {
     this.bindGatewayWake();
   }
 
-  /** Phone sleep and app switches drop the socket without a close event. Probe, then reconnect. */
+  /** Phone sleep drops sockets; coalesce wake into one ensureOperator pass (no parallel handshakes). */
   bindGatewayWake() {
-    let last = 0;
-    const wake = () => {
+    let pending = false;
+    let timer = null;
+    let lastEvent = 0;
+    const run = () => {
+      timer = null;
+      if (!pending) return;
+      pending = false;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (this.entryMode() === 'service') {
+        // Service mode keeps no socket: the chat view reconciles state and
+        // resumes polling for in-flight turns.
+        this.recoverChatViews();
+        return;
+      }
+      this.ensureOperator()
+        .then(() => {
+          this.recoverChatViews();
+          const prefs = this.connectionPrefs();
+          if (prefs.vaultNode) return this.ensureVaultNode();
+        })
+        .catch(() => {});
+    };
+    const wake = () => {
       const now = Date.now();
-      if (now - last < 1500) return;
-      last = now;
-      this.operator?.revive?.().catch(() => {});
-      this.vaultNode?.revive?.().catch(() => {});
+      if (now - lastEvent < 1500) return;
+      lastEvent = now;
+      pending = true;
+      if (timer) return;
+      timer = setTimeout(run, 350);
     };
     this.registerDomEvent(document, 'visibilitychange', wake);
     this.registerDomEvent(window, 'focus', wake);
     this.registerDomEvent(window, 'online', wake);
     this.registerDomEvent(window, 'pageshow', wake);
+    this.register(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  /**
+   * Foreground recovery for every open chat view: verify state, fetch results,
+   * then send what is still queued. Any view may be the visible one, so all of
+   * them are nudged; the per-turn resume guard prevents double polling.
+   */
+  recoverChatViews() {
+    for (const leaf of this.app?.workspace?.getLeavesOfType?.(VIEW_TYPE) || []) {
+      leaf.view?.recover?.();
+    }
   }
 
   /**
@@ -292,6 +337,139 @@ export default class MeSoulPlugin extends Plugin {
     }
     this._memorySecrets ||= createMemoryStore();
     return this._memorySecrets;
+  }
+
+  sessionStore() {
+    const vaultId = this.app?.appId || this.app?.vault?.getName?.() || 'vault';
+    if (typeof localStorage !== 'undefined') {
+      return createSessionStore(
+        {
+          get: (k) => localStorage.getItem(k),
+          set: (k, v) => localStorage.setItem(k, v),
+          remove: (k) => localStorage.removeItem(k),
+        },
+        `aos:${vaultId}:sk:`
+      );
+    }
+    this._memorySessionStore ||= createMemorySessionStore();
+    return this._memorySessionStore;
+  }
+
+  /**
+   * Which transport the phone should use for turns.
+   * `service` is the durable HTTPS path; `direct` is the legacy gateway socket.
+   */
+  entryMode() {
+    if (this.settings?.entryMode === 'direct') return 'direct';
+    if (this.settings?.entryMode === 'service') return 'service';
+    // Auto: use the durable service whenever this device is paired.
+    return this.deviceCredential() ? 'service' : 'direct';
+  }
+
+  serviceUrl() {
+    return normalizeServiceUrl(this.settings?.serviceUrl || 'https://agent.chenhaotong.one');
+  }
+
+  deviceCredential() {
+    const record = this.sessionStore()?.loadDeviceCredential?.();
+    return record?.credential || '';
+  }
+
+  deviceInfo() {
+    return this.sessionStore()?.loadDeviceCredential?.() || null;
+  }
+
+  /** Only device credentials live here; they are never written to data.json. */
+  saveDeviceCredential(record) {
+    this.sessionStore()?.saveDeviceCredential?.(record || null);
+  }
+
+  /** Ask for a one-time pairing code and register this device. */
+  openPairModal() {
+    const modal = new PairDeviceModal(this.app, {
+      onPair: (code) => this.pairDevice(code),
+      onDone: () => {
+        this.recoverChatViews();
+        new Notice('这台设备已配对，消息会先存到本机再发往 Mac。');
+      },
+    });
+    modal.open();
+    return modal;
+  }
+
+  serviceClient() {
+    if (!this._serviceClient || this._serviceClientBase !== this.serviceUrl()) {
+      this._serviceClient = createServiceClient({
+        url: this.serviceUrl(),
+        getCredential: () => this.deviceCredential(),
+      });
+      this._serviceClientBase = this.serviceUrl();
+    }
+    return this._serviceClient;
+  }
+
+  /** Exchange a one-time pairing code for this device's own credential. */
+  async pairDevice(code, meta = {}) {
+    const client = this.serviceClient();
+    const result = await client.pair(code, {
+      name: meta.name || `Obsidian · ${this.settings.agentName || 'Agent'}`,
+      platform: this.deviceFamilyName(),
+    });
+    if (!result?.credential) throw new Error('服务没有返回设备凭据');
+    this.saveDeviceCredential({
+      credential: result.credential,
+      deviceId: result.device?.id || '',
+      name: result.device?.name || '',
+      pairedAt: Date.now(),
+      serviceUrl: this.serviceUrl(),
+    });
+    this.settings.serviceUrl = this.serviceUrl();
+    if (!this.settings.entryMode) this.settings.entryMode = 'auto';
+    await this.saveSettings();
+    this.invalidateKernel();
+    return result;
+  }
+
+  deviceFamilyName() {
+    return Platform.isMobile || Platform.isMobileApp ? 'ios' : 'macos';
+  }
+
+  /** Remove this device's credential (the Mac can also revoke it). */
+  async unpairDevice() {
+    this.saveDeviceCredential(null);
+    this._serviceClient = null;
+    if (this.settings.entryMode === 'service') this.settings.entryMode = 'direct';
+    await this.saveSettings();
+    return true;
+  }
+
+  async loadKernelCatalog(client) {
+    if (!client || client.status?.state !== 'live') return;
+    if (this.kernelModels?.length && this.kernelAgents?.length) return;
+    const [models, agents] = await Promise.all([
+      client.listModels().catch(() => []),
+      client.listAgents().catch(() => []),
+    ]);
+    if (models.length) this.kernelModels = models;
+    if (agents.length) this.kernelAgents = agents;
+  }
+
+  /** Pull model/agent catalog through the Mac HTTPS service (phone service mode). */
+  async loadServiceCatalog() {
+    if (this.entryMode() !== 'service') return;
+    const client = this.serviceClient?.();
+    if (!client?.hasCredential?.()) return;
+    try {
+      const { json } = await client.fetchCatalog();
+      if (Array.isArray(json?.models) && json.models.length) this.kernelModels = json.models;
+      if (Array.isArray(json?.agents) && json.agents.length) this.kernelAgents = json.agents;
+      return true;
+    } catch (error) {
+      if (error?.status === 404 || error?.code === 'NOT_FOUND') {
+        this._catalogMissing = true;
+      }
+      return false;
+    }
   }
 
   hostGatewayToken() {
@@ -439,17 +617,18 @@ export default class MeSoulPlugin extends Plugin {
   }
 
   async ensureOperator(opts = {}) {
+    if (this._ensureOperatorTask) return this._ensureOperatorTask;
+    this._ensureOperatorTask = this._ensureOperatorImpl(opts).finally(() => {
+      this._ensureOperatorTask = null;
+    });
+    return this._ensureOperatorTask;
+  }
+
+  async _ensureOperatorImpl(opts = {}) {
     if (opts.force) this.invalidateKernel();
     if (this.operator?.revive) {
       const live = await this.operator.revive();
-      if (live && !this.kernelModels?.length) {
-        const [models, agents] = await Promise.all([
-          this.operator.listModels().catch(() => []),
-          this.operator.listAgents().catch(() => []),
-        ]);
-        this.kernelModels = models;
-        this.kernelAgents = agents;
-      }
+      if (live) await this.loadKernelCatalog(this.operator);
       return this.operator;
     }
     if (this.operator) return this.operator;
@@ -483,14 +662,7 @@ export default class MeSoulPlugin extends Plugin {
     this.operator = client;
     await client.connect();
     if (client.deviceToken) writeSecret(this.secretStore(), 'operatorDeviceToken', client.deviceToken);
-    if (client.status.state === 'live') {
-      const [models, agents] = await Promise.all([
-        client.listModels().catch(() => []),
-        client.listAgents().catch(() => []),
-      ]);
-      this.kernelModels = models;
-      this.kernelAgents = agents;
-    }
+    if (client.status.state === 'live') await this.loadKernelCatalog(client);
     if (prefs.vaultNode) this.ensureVaultNode().catch(() => {});
     return client;
   }
@@ -498,17 +670,15 @@ export default class MeSoulPlugin extends Plugin {
   activeThinkingProfile() {
     const selected = this.connectionPrefs().model;
     const models = Array.isArray(this.kernelModels) ? this.kernelModels : [];
-    if (selected) {
-      const model = models.find(
-        (item) => item.id === selected || `${item.provider}/${item.id}` === selected
-      );
-      if (model && thinkingLevelsOf(model).length) return model;
-    }
-    const agentId = this.settings.agentId || 'main';
-    const agents = Array.isArray(this.kernelAgents) ? this.kernelAgents : [];
-    const agent = agents.find((item) => item.id === agentId) || agents[0];
-    if (agent && thinkingLevelsOf(agent).length) return agent;
-    return null;
+    if (!selected) return null;
+    return (
+      models.find(
+        (item) =>
+          item.id === selected ||
+          `${item.provider}/${item.id}` === selected ||
+          item.id === selected.split('/').pop()
+      ) || null
+    );
   }
 
   thinkingChoices() {
@@ -595,6 +765,10 @@ export default class MeSoulPlugin extends Plugin {
    */
   async activateView() {
     const { workspace } = this.app;
+    const active = workspace.activeLeaf;
+    if (active?.view?.getViewType?.() !== VIEW_TYPE) {
+      this._chatReturnLeaf = active;
+    }
     const existing = workspace.getLeavesOfType(VIEW_TYPE);
 
     const isSideLeaf = (leaf) => {
@@ -636,12 +810,56 @@ export default class MeSoulPlugin extends Plugin {
     await leaf.view?.consumeQueuedLaunch?.();
   }
 
+  isChatLeafActive() {
+    const leaf = this.app.workspace.activeLeaf;
+    return leaf?.view?.getViewType?.() === VIEW_TYPE;
+  }
+
+  /** Leave fullscreen chat for the previous note leaf, or open the note switcher. */
+  async returnFromChat() {
+    const { workspace } = this.app;
+    const leafAlive = (leaf) => {
+      if (!leaf?.view || leaf.view.getViewType?.() === VIEW_TYPE) return false;
+      let found = false;
+      workspace.iterateAllLeaves((candidate) => {
+        if (candidate === leaf) found = true;
+      });
+      return found;
+    };
+    const target = this._chatReturnLeaf;
+    if (target && leafAlive(target)) {
+      workspace.revealLeaf(target);
+      return true;
+    }
+    const noteLeaf = workspace
+      .getLeavesOfType('markdown')
+      .find((leaf) => leaf !== workspace.activeLeaf && leafAlive(leaf));
+    if (noteLeaf) {
+      workspace.revealLeaf(noteLeaf);
+      return true;
+    }
+    try {
+      await this.app.commands.executeCommandById('switcher:open');
+      return true;
+    } catch {
+      return this.openHome({ notice: true });
+    }
+  }
+
   async loadSettings() {
     this.settings = Object.assign(
       {
         gatewayUrl: 'ws://127.0.0.1:18789',
         gatewayRemoteUrl: 'wss://mac-mini.tail3b2ec3.ts.net',
         gatewayToken: '',
+        /** Fixed HTTPS entry point for the Mac service. */
+        serviceUrl: 'https://agent.chenhaotong.one',
+        /**
+         * auto   — use the durable service once this device is paired
+         * service — always use the HTTPS service
+         * direct  — keep the legacy gateway socket (manual fallback)
+         */
+        entryMode: 'auto',
         agentId: 'main',
         thinking: '',
         quiet: false,
@@ -743,6 +961,26 @@ export default class MeSoulPlugin extends Plugin {
     if (changed) await this.saveData(this.settings);
   }
 
+  /**
+   * The plan requires per-device credentials that are not shared through the
+   * vault config. Once this device holds its own credential and is not using
+   * the legacy socket, the synced shared token is cleared from data.json.
+   *
+   * Only the desktop instance writes this change, so a phone cannot strip the
+   * token before the Mac has finished migrating.
+   */
+  async retireSharedCredentialIfPaired() {
+    if (Platform.isMobile || Platform.isMobileApp) return false;
+    if (!this.deviceCredential()) return false;
+    if (this.settings.entryMode === 'direct') return false;
+    if (!this.settings.gatewayToken) return false;
+    this.settings.gatewayToken = '';
+    const store = this.secretStore();
+    writeSecret(store, 'gatewayToken', '');
+    await this.saveSettings();
+    return true;
+  }
+
   async saveSettings() {
     await this.saveData(this.settings);
   }
@@ -806,8 +1044,126 @@ class MeSoulSettingTab extends PluginSettingTab {
     hero.createEl('h2', { text: 'Obsidian Agent OS' });
     hero.createEl('p', {
       cls: 'me-soul-settings-hero-sub',
-      text: 'OpenClaw 客户端。手机走 Tailscale，命令条只是附加入口。',
+      text: 'OpenClaw 客户端。手机走固定 HTTPS 入口，命令条只是附加入口。',
     });
+
+    // ============================================================
+    // 0. 手机入口（固定 HTTPS + 设备配对）
+    // ============================================================
+    {
+      const body = this.section(containerEl, {
+        title: '手机入口',
+        desc: '手机只发短 HTTPS 请求：消息先存本机，再由 Mac 常驻服务执行。手机锁屏或换网都不会丢消息。',
+        badge: '0',
+      });
+      const device = this.plugin.deviceInfo();
+      const mode = this.plugin.entryMode();
+
+      new Setting(body)
+        .setName('入口方式')
+        .setDesc(
+          device
+            ? `当前：${mode === 'service' ? '固定 HTTPS（Mac 服务）' : '旧版网关直连（手动回退）'}`
+            : '还没有配对。配对后自动改用固定 HTTPS 入口。'
+        )
+        .addDropdown((dropdown) =>
+          dropdown
+            .addOption('auto', '自动（已配对就走 HTTPS）')
+            .addOption('service', '固定 HTTPS 服务')
+            .addOption('direct', '旧版网关直连（回退）')
+            .setValue(s.entryMode || 'auto')
+            .onChange(async (value) => {
+              s.entryMode = value;
+              await this.plugin.saveSettings();
+              this.plugin.invalidateKernel();
+              this.display();
+            })
+        );
+
+      new Setting(body)
+        .setName('服务地址')
+        .setDesc('Cloudflare Tunnel 指向 Mac 常驻服务的固定域名。')
+        .addText((text) =>
+          text
+            .setPlaceholder('https://agent.chenhaotong.one')
+            .setValue(s.serviceUrl || 'https://agent.chenhaotong.one')
+            .onChange(async (value) => {
+              s.serviceUrl = value.trim() || 'https://agent.chenhaotong.one';
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(body)
+        .setName('设备配对')
+        .setDesc(
+          device
+            ? `已配对${device.name ? `：${device.name}` : ''}（凭据只存在本机，可在 Mac 上单独撤销）`
+            : '在 Mac 上运行 agent-os pair 生成一次性配对码。'
+        )
+        .addButton((button) =>
+          button.setButtonText(device ? '重新配对' : '配对这台设备').onClick(() => {
+            this.plugin.openPairModal();
+          })
+        )
+        .addButton((button) =>
+          button.setButtonText('诊断连接').onClick(async () => {
+            const report = await this.plugin.serviceClient().diagnose();
+            this.diagnosis = report;
+            new Notice(
+              report.authenticated
+                ? `正常：服务 ${report.serviceVersion} · 内核 ${report.diagnosis?.kernel || report.kernel}`
+                : `${report.error?.message || '异常'}\n${report.error?.hint || ''}`,
+              8000
+            );
+            this.display();
+          })
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('解除配对')
+            .setDisabled(!device)
+            .onClick(async () => {
+              await this.plugin.unpairDevice();
+              this.diagnosis = null;
+              new Notice('已在本机解除配对。别忘了在 Mac 上撤销这台设备的凭据。');
+              this.display();
+            })
+        );
+
+      const report = this.diagnosis;
+      if (report) {
+        const box = body.createDiv({ cls: 'me-soul-settings-diagnosis' });
+        box.createDiv({
+          cls: 'me-soul-settings-diag-line',
+          text: `服务地址：${report.url}`,
+        });
+        box.createDiv({
+          cls: 'me-soul-settings-diag-line',
+          text: `能否到达入口：${report.reachable ? '是' : '否'}`,
+        });
+        box.createDiv({
+          cls: 'me-soul-settings-diag-line',
+          text: `本机是否已配对：${report.paired ? '是' : '否'}`,
+        });
+        box.createDiv({
+          cls: 'me-soul-settings-diag-line',
+          text: `凭据是否有效：${report.authenticated ? '是' : report.paired ? '否' : '未配对'}`,
+        });
+        if (report.error) {
+          box.createDiv({
+            cls: 'me-soul-settings-diag-line is-error',
+            text: `失败环节：${report.error.step} · ${report.error.code}`,
+          });
+          box.createDiv({ cls: 'me-soul-settings-diag-line', text: report.error.message });
+          box.createDiv({ cls: 'me-soul-settings-diag-hint', text: report.error.hint || '' });
+        } else {
+          box.createDiv({
+            cls: 'me-soul-settings-diag-line',
+            text: `服务版本：${report.serviceVersion} · 内核：${report.diagnosis?.kernel || report.kernel}`,
+          });
+        }
+      }
+    }
 
     // ============================================================
     // 1. OpenClaw 连接
@@ -827,11 +1183,14 @@ class MeSoulSettingTab extends PluginSettingTab {
 
       new Setting(body)
         .setName('聊天时隐藏底栏')
-        .setDesc('只在手机上生效。打开后，全屏对话不再为 Obsidian 底栏留空。')
+        .setDesc('只在手机上生效。仅当全屏对话在前台时隐藏 Obsidian 底栏；离开对话会自动恢复。')
         .addToggle((toggle) =>
           toggle.setValue(!!s.hideMobileNavbar).onChange(async (value) => {
             this.plugin.settings.hideMobileNavbar = value;
-            document.body.classList.toggle('aos-hide-navbar', !!value);
+            document.body.classList.toggle(
+              'aos-hide-navbar',
+              !!value && this.plugin.isChatLeafActive()
+            );
             await this.plugin.saveSettings();
           })
         );

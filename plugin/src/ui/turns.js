@@ -82,7 +82,7 @@ function makeMessage(role, text, extra = {}) {
 
 /**
  * Collapse gateway history into chat turns.
- * Consecutive tool rows attach to the following assistant message.
+ * Tool rows and assistant fragments between two user messages become one turn.
  * @param {any} payload
  */
 export function historyToTurns(payload) {
@@ -90,31 +90,56 @@ export function historyToTurns(payload) {
   if (!Array.isArray(rows)) return [];
   /** @type {any[]} */
   const out = [];
-  /** @type {any[]} */
-  let tools = [];
-  let reasoning = '';
+  /** @type {null | { id: string, ts: number, texts: string[], tools: any[], reasoning: string, fromAssistant: boolean }} */
+  let pending = null;
 
-  const flushTools = () => {
-    if (!tools.length && !reasoning) return;
+  const flushAssistant = () => {
+    if (!pending) return;
+    const snapshot = pending;
+    pending = null;
+    const text = snapshot.texts.map((part) => part.trim()).filter(Boolean).join('\n\n');
+    const reasoning = snapshot.reasoning.trim();
+    if (!text && !snapshot.tools.length && !reasoning) return;
     out.push(
-      makeMessage('assistant', '', {
-        ts: tools[0]?.endedAt || 0,
-        activity: { reasoning, status: '', tools, startedAt: tools[0]?.startedAt || 0 },
+      makeMessage('assistant', text, {
+        id: snapshot.id,
+        ts: snapshot.ts || snapshot.tools[0]?.endedAt || 0,
+        activity: {
+          reasoning,
+          status: '',
+          tools: snapshot.tools,
+          startedAt: snapshot.tools[0]?.startedAt || snapshot.ts || 0,
+        },
       })
     );
-    tools = [];
-    reasoning = '';
+  };
+
+  const ensurePending = (row, index) => {
+    const ts = timestampOf(row);
+    if (!pending) {
+      pending = {
+        id: String(row?.id || `h-${index}`),
+        ts: ts || 0,
+        texts: [],
+        tools: [],
+        reasoning: '',
+        fromAssistant: false,
+      };
+      return;
+    }
+    if (ts) pending.ts = ts;
   };
 
   rows.forEach((row, index) => {
     if (isToolRow(row)) {
-      tools.push(toolFromRow(row));
+      ensurePending(row, index);
+      pending.tools.push(toolFromRow(row));
       return;
     }
     const role = row?.role === 'user' ? 'user' : row?.role === 'assistant' ? 'assistant' : '';
     if (!role) return;
     if (role === 'user') {
-      flushTools();
+      flushAssistant();
       const text = stripInjectedContext(textOfMessage(row));
       if (!text) return;
       out.push(
@@ -127,26 +152,103 @@ export function historyToTurns(payload) {
     }
     const text = textOfMessage(row).trim();
     const thought = thinkingOf(row);
-    const merged = [...tools];
-    const prior = reasoning;
-    tools = [];
-    reasoning = '';
-    if (!text && !merged.length && !thought && !prior) return;
-    out.push(
-      makeMessage('assistant', text, {
-        id: String(row.id || `h-${index}`),
-        ts: timestampOf(row),
-        activity: {
-          reasoning: thought || prior,
-          status: '',
-          tools: merged,
-          startedAt: merged[0]?.startedAt || timestampOf(row) || 0,
-        },
-      })
-    );
+    if (!text && !thought && !pending?.tools.length) return;
+    ensurePending(row, index);
+    if (!pending.fromAssistant && row.id) pending.id = String(row.id);
+    pending.fromAssistant = true;
+    if (text) pending.texts.push(text);
+    if (thought) pending.reasoning = pending.reasoning ? `${pending.reasoning}\n${thought}` : thought;
   });
-  flushTools();
+  flushAssistant();
   return out;
+}
+
+function mergeKey(role, text) {
+  return `${role}\u0000${String(text ?? '').replace(/\s+/g, ' ').trim()}`;
+}
+
+/**
+ * Merge gateway history into the local transcript without clobbering anything
+ * the phone has that the Mac has not seen yet.
+ *
+ * History wins for content it knows about; local-only messages (a message typed
+ * while offline, a draft still streaming) are kept in place. The local user
+ * message id is preserved when the text matches, so an in-flight turn keeps its
+ * identity across a reload.
+ *
+ * Pure: no DOM, no storage.
+ * @param {any[]} local
+ * @param {any[]} incoming
+ */
+export function mergeTranscript(local, incoming) {
+  const remote = Array.isArray(incoming) ? incoming : [];
+  const mine = Array.isArray(local) ? local : [];
+  if (!remote.length) return mine;
+  if (!mine.length) return remote;
+
+  // Everything the Mac knows starts out "already accounted for"; local-only
+  // rows are the ones to keep. A remote row only lands in the output when it
+  // could not be paired with a local row.
+  const consumed = new Set(remote);
+  const replaced = new Set();
+  const localUserByKey = new Map();
+  for (const message of mine) {
+    if (message?.role !== 'user') continue;
+    const key = mergeKey('user', message.text);
+    if (!localUserByKey.has(key)) localUserByKey.set(key, message);
+  }
+
+  const pairs = [];
+  for (const message of mine) {
+    if (message?.role !== 'user') continue;
+    const key = mergeKey('user', message.text);
+    if (localUserByKey.get(key) !== message) continue;
+    const position = remote.findIndex((row) => row?.role === 'user' && mergeKey('user', row.text) === key);
+    if (position < 0) continue;
+    const remoteUser = remote[position];
+    const next = remote[position + 1];
+    const reply = next && next.role === 'assistant' ? next : null;
+    const draft = mine.find((row) => row?.role === 'assistant' && row.turnId === message.turnId);
+    // The Mac's copy of the turn is now represented by the local pair.
+    consumed.add(remoteUser);
+    if (reply) consumed.add(reply);
+    if (draft) replaced.add(draft);
+    pairs.push({ local: message, remoteUser, reply, draft });
+  }
+
+  const out = [];
+  let pairIndex = 0;
+  for (const message of mine) {
+    if (replaced.has(message)) continue;
+    if (message?.role === 'user') {
+      const pair = pairs[pairIndex];
+      if (pair && pair.local === message) {
+        pairIndex += 1;
+        out.push({ ...message, ts: pair.remoteUser.ts || message.ts });
+        if (pair.reply && pair.draft) {
+          // Adopt the Mac's reply in place of the local placeholder.
+          out.push({ ...pair.reply, id: pair.draft.id, turnId: message.turnId });
+        }
+        continue;
+      }
+    }
+    out.push({ ...message });
+  }
+
+  for (const row of remote) {
+    if (consumed.has(row)) continue;
+    out.push({ ...row });
+  }
+
+  // Stable sort on timestamp; local-only rows keep their relative order.
+  return out
+    .map((message, index) => ({ message, index }))
+    .sort((a, b) => {
+      const delta = (a.message.ts || 0) - (b.message.ts || 0);
+      if (delta !== 0) return delta;
+      return a.index - b.index;
+    })
+    .map((row) => row.message);
 }
 
 /**

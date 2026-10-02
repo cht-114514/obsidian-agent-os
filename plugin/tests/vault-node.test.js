@@ -81,12 +81,15 @@ describe('vault node invoke', () => {
     });
     node.client.socket = {
       opened: true,
+      isOpen: () => true,
       request: async (method, params) => {
         node.client.socket.last = { method, params };
         if (method === 'node.invoke.result') return { ok: true };
         return {};
       },
     };
+    node.client.handshakeReady = true;
+    node.client.status = { state: 'live', role: 'node', message: '' };
     node.client.identity = node.client.identity || {};
     await node.handleInvoke({
       id: 'inv-1',

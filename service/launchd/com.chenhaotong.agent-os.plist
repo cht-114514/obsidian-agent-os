@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.chenhaotong.agent-os</string>
+
+    <key>Comment</key>
+    <string>Obsidian Agent OS Mac service — durable turn receiver and OpenClaw executor</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/chen/.nvm/versions/node/v22.23.1/bin/node</string>
+      <string>/Users/chen/Library/Mobile Documents/iCloud~md~obsidian/Documents/Me.Inc/agent-inbox/me-soul/service/src/server.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/chen/Library/Mobile Documents/iCloud~md~obsidian/Documents/Me.Inc/agent-inbox/me-soul</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HOME</key>
+      <string>/Users/chen</string>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>AOS_HOST</key>
+      <string>127.0.0.1</string>
+      <key>AOS_PORT</key>
+      <string>8788</string>
+      <key>AOS_STATE_DIR</key>
+      <string>/Users/chen/.local/share/agent-os</string>
+      <key>AOS_PUBLIC_URL</key>
+      <string>https://agent.chenhaotong.one</string>
+      <key>AOS_VAULT_PATH</key>
+      <string>/Users/chen/Library/Mobile Documents/iCloud~md~obsidian/Documents/Me.Inc</string>
+      <key>OPENCLAW_URL</key>
+      <string>ws://127.0.0.1:18789</string>
+      <key>AOS_LOG_LEVEL</key>
+      <string>info</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/chen/.local/share/agent-os/service.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chen/.local/share/agent-os/service.err.log</string>
+  </dict>
+</plist>

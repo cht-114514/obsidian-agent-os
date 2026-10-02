@@ -23,12 +23,14 @@ function avatarLetter(name) {
  *   onRegenerate?: (message: any) => void,
  *   onStarter?: (skillId: string) => void,
  *   onContinue?: () => void,
+ *   jumpHost?: HTMLElement,
  * }} deps
  */
 export function mountChatPane(el, deps) {
   el.empty();
   const groups = el.createDiv({ cls: 'aos-groups' });
-  const jump = el.createEl('button', {
+  const jumpHost = deps.jumpHost || el;
+  const jump = jumpHost.createEl('button', {
     cls: 'aos-jump',
     text: '回到底部',
     attr: { type: 'button' },
@@ -73,8 +75,29 @@ export function mountChatPane(el, deps) {
       regen = actions.createEl('button', { text: '重新生成', attr: { type: 'button' } });
       regen.onclick = () => deps.onRegenerate?.(message);
     }
+    // A turn whose delivery outcome is unknown is resolved by the user, never
+    // re-sent automatically.
+    const pending = actions.createDiv({ cls: 'aos-pending-actions' });
+    const retry = pending.createEl('button', { text: '重发', attr: { type: 'button' } });
+    retry.onclick = () => deps.onPendingAction?.(message, 'retry');
+    const discard = pending.createEl('button', { text: '忽略', attr: { type: 'button' } });
+    discard.onclick = () => deps.onPendingAction?.(message, 'discard');
+    const note = msg.createDiv({ cls: 'aos-pending-note' });
     time.onclick = () => foot.toggleClass('is-open', !foot.hasClass('is-open'));
-    const node = { group, work, bubble, time, copy, regen, text: '', done: false, gen: 0, timer: 0 };
+    const node = {
+      group,
+      work,
+      bubble,
+      time,
+      copy,
+      regen,
+      pending,
+      note,
+      text: '',
+      done: false,
+      gen: 0,
+      timer: 0,
+    };
     group._node = node;
     return node;
   }
@@ -112,6 +135,19 @@ export function mountChatPane(el, deps) {
     node.time.toggleClass('is-hidden', !(message.ts && gap >= 5 * 60 * 1000));
     if (node.regen) node.regen.onclick = () => deps.onRegenerate?.(message);
     node.copy.onclick = () => deps.onCopy?.(message.text || '');
+    if (node.pending) {
+      const pendingButtons = node.pending.querySelectorAll('button');
+      if (pendingButtons[0]) pendingButtons[0].onclick = () => deps.onPendingAction?.(message, 'retry');
+      if (pendingButtons[1]) pendingButtons[1].onclick = () => deps.onPendingAction?.(message, 'discard');
+      const turnStatus = message.turnStatus || '';
+      const canRetry = turnStatus === 'unknown' || turnStatus === 'error' || turnStatus === 'failed' || turnStatus === 'prep_failed' || turnStatus === 'unconfirmed';
+      node.pending.toggleClass('is-open', canRetry);
+      node.note.toggleClass('is-open', canRetry && !!(message.errorHint || turnStatus === 'unknown' || turnStatus === 'unconfirmed' || turnStatus === 'prep_failed'));
+      node.note.setText(
+        message.errorHint ||
+          (turnStatus === 'unknown' ? '这条消息可能已经发出，但没拿到回执。先检查结果，确认没有执行过再重试。' : '')
+      );
+    }
     const text = message.text || '';
     if (role === 'user') {
       if (node.text !== text) {
@@ -128,8 +164,9 @@ export function mountChatPane(el, deps) {
 
   function showEmpty(canContinue) {
     const empty = groups.createDiv({ cls: 'aos-empty' });
-    empty.createDiv({ cls: 'aos-avatar', text: avatarLetter(deps.agentName) });
-    empty.createEl('p', { text: '发一条消息，或打开左上角的会话。' });
+    empty.createDiv({ cls: 'aos-avatar aos-empty-mark', text: avatarLetter(deps.agentName) });
+    empty.createDiv({ cls: 'aos-empty-title', text: '从一个问题开始' });
+    empty.createEl('p', { text: '发消息，或继续之前的会话。' });
     if (canContinue) {
       const cont = empty.createEl('button', {
         cls: 'aos-continue',

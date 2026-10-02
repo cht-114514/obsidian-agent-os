@@ -235,4 +235,80 @@ describe('kernel client handshake', () => {
     assert.equal(client.status.approveCommand, 'openclaw devices approve dev-req');
     client.disconnect();
   });
+
+  it('joins concurrent connect attempts', async () => {
+    const client = new KernelClient({
+      url: 'ws://127.0.0.1:18789',
+      token: 'shared-token',
+      identity: createDeviceIdentity(),
+      WebSocketImpl: MockSocket,
+    });
+    const a = client.connect();
+    const b = client.connect({ force: true });
+    assert.equal(a, b);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    MockSocket.latest.emit('message', {
+      data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n3', ts: 300 } }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const connect = MockSocket.latest.sent.find((frame) => frame.method === 'connect');
+    MockSocket.latest.emit('message', {
+      data: JSON.stringify({
+        type: 'res',
+        id: connect.id,
+        ok: true,
+        payload: { type: 'hello-ok', protocol: 4 },
+      }),
+    });
+    await a;
+    assert.equal(client.status.state, 'live');
+    client.disconnect();
+  });
+
+  it('rejects pending RPC when the socket is replaced', async () => {
+    const socket = new GatewaySocket({ WebSocketImpl: MockSocket });
+    await socket.open('ws://example');
+    const pending = socket.request('health', {});
+    socket.rejectAllPending('连接已更换');
+    await assert.rejects(pending, (error) => error.code === 'CONNECTION_REPLACED');
+    socket.close();
+  });
+
+  it('never hangs the handshake when the challenge never arrives', async () => {
+    const client = new KernelClient({
+      url: 'ws://127.0.0.1:18789',
+      token: 'shared-token',
+      identity: createDeviceIdentity(),
+      WebSocketImpl: MockSocket,
+    });
+    // Speed the challenge wait down so the test stays fast.
+    client._handshake = async function handshakeWithoutChallenge(socket) {
+      await socket.open(this.url, 100);
+      return socket.nextEvent('connect.challenge', 30);
+    };
+    await assert.rejects(() => client.connect(), (error) => {
+      assert.equal(error.code, 'TIMEOUT');
+      return true;
+    });
+    assert.equal(client.status.state, 'offline');
+    // The failed socket is released, so a later attempt starts from scratch.
+    assert.equal(client.socket, null);
+    assert.equal(client.handshakeReady, false);
+    client.disconnect();
+  });
+
+  it('fails fast instead of joining a stuck handshake forever', async () => {
+    const client = new KernelClient({
+      url: 'ws://127.0.0.1:18789',
+      token: 'shared-token',
+      identity: createDeviceIdentity(),
+      WebSocketImpl: MockSocket,
+    });
+    // A handshake that never settles (the classic permanent-freeze shape).
+    client._handshake = () => new Promise(() => {});
+    const live = await client.boundedConnect(25);
+    assert.equal(live, false);
+    assert.equal(client.connectPromise, null);
+    client.disconnect();
+  });
 });

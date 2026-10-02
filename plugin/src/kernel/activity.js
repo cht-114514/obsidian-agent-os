@@ -74,8 +74,29 @@ function reasoningFromContent(content) {
     .join('\n');
 }
 
+export function applyTurnEvent(activity, event) {
+  const next = cloneActivity(activity);
+  if (!event?.kind) return next;
+  if (event.kind === 'thinking' && event.text) {
+    next.reasoning = String(event.text);
+    return next;
+  }
+  if (event.kind === 'tool' && event.text) {
+    try {
+      const patch = JSON.parse(event.text);
+      upsertTool(next.tools, patch);
+    } catch {
+      /* ignore malformed tool payloads */
+    }
+    return next;
+  }
+  if (event.kind === 'status' && event.text) {
+    next.status = String(event.text);
+  }
+  return next;
+}
+
 /**
- * Fold one gateway frame into the live reasoning / tool activity for a turn.
  * Unknown frames leave the activity unchanged.
  */
 export function reduceActivity(activity, frame) {

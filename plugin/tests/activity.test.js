@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { reduceActivity } from '../src/kernel/activity.js';
+import { applyTurnEvent, reduceActivity } from '../src/kernel/activity.js';
 
 describe('live activity', () => {
   it('shows tool start and result without dropping the name', () => {
@@ -55,5 +55,15 @@ describe('live activity', () => {
       },
     });
     assert.equal(activity.reasoning, '内部推导');
+  });
+
+  it('replays service turn events into activity', () => {
+    let activity = applyTurnEvent(null, { kind: 'thinking', text: '比较十分位' });
+    activity = applyTurnEvent(activity, {
+      kind: 'tool',
+      text: JSON.stringify({ id: 'read', name: 'read', phase: 'start', title: 'notes.md' }),
+    });
+    assert.equal(activity.reasoning, '比较十分位');
+    assert.equal(activity.tools[0].name, 'read');
   });
 });
