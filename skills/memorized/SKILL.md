@@ -9,7 +9,7 @@ description: 准备向量记忆库；确认后由插件执行 embedding。
 
 Refresh **vector memory** for accepted wiki pages.
 
-## You (Grok Build) do
+## You (OpenClaw) do
 
 1. List `agent-inbox/wiki/sources/*.md` excluding `wiki_status: pending_review`  
 2. Count pages and summarize titles  

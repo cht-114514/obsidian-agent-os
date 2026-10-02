@@ -1,6 +1,6 @@
 ---
 name: me-care-check
-description: Grok Build 按 cares.md 扫描牵挂，写 pending-care.md。
+description: OpenClaw 按 cares.md 扫描牵挂，写 pending-care.md。
 ---
 
 # me-care-check

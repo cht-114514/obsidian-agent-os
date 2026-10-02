@@ -12,7 +12,7 @@ describe('skill-prompt', () => {
   it('recognizes slash skills', () => {
     assert.equal(isGrokSkill('me-digest'), true);
     assert.equal(isGrokSkill('memorized'), true);
-    assert.equal(isGrokSkill('me-imagine'), true);
+    assert.equal(isGrokSkill('me-imagine'), false);
     assert.equal(isGrokSkill('__new'), false);
   });
 
@@ -29,13 +29,13 @@ describe('skill-prompt', () => {
     assert.match(p, /把所有日记消化一下/);
     assert.match(p, /手记\/x\.md/);
     assert.match(p, /附带上下文/);
-    assert.match(p, /Grok Build/);
+    assert.match(p, /vault_write/);
   });
 
   it('buildGrokSkillPrompt injects prior conversation for deixis', () => {
     const p = buildGrokSkillPrompt({
-      skillId: 'me-imagine',
-      skillMd: FALLBACK_SKILLS['me-imagine'],
+      skillId: 'me-digest',
+      skillMd: FALLBACK_SKILLS['me-digest'],
       userText: '输出该物理模型的简要图像',
       contextBlock: '',
       conversation:
@@ -72,7 +72,6 @@ describe('skill-prompt', () => {
       'me-reflect-feedback',
       'me-care-check',
       'me-soul-promote',
-      'me-imagine',
       'memorized',
       'me-reindex',
       'me-apply-pending',
@@ -84,9 +83,10 @@ describe('skill-prompt', () => {
   });
 
   it('parseSlashSkillCommand extracts skill + rest', () => {
-    assert.deepEqual(parseSlashSkillCommand('/me-imagine 画火箭'), {
-      skillId: 'me-imagine',
-      rest: '画火箭',
+    assert.equal(parseSlashSkillCommand('/me-imagine 画火箭'), null);
+    assert.deepEqual(parseSlashSkillCommand('/me-digest 日记'), {
+      skillId: 'me-digest',
+      rest: '日记',
     });
     assert.equal(parseSlashSkillCommand('/unknown x'), null);
     assert.equal(parseSlashSkillCommand('no slash'), null);

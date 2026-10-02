@@ -24,6 +24,8 @@ describe('plugin renderer', () => {
     assert.ok(blocks.some((b) => b.type === 'thought'));
     assert.ok(blocks.some((b) => b.type === 'confirm'));
     assert.match(html, /me-soul-thought/);
+    assert.doesNotMatch(html, /me-soul-thought" open/);
+    assert.doesNotMatch(html, /me-soul-thought" open>/);
     assert.match(html, /me-soul-confirm/);
     assert.match(html, /偏好更新/);
   });

@@ -1,11 +1,11 @@
 ---
 name: me-digest
-description: Grok Build 编译笔记为待审 wiki；确认卡 Accept/Reject。
+description: OpenClaw 编译笔记为待审 wiki；确认卡 Accept/Reject。
 ---
 
 # me-digest
 
-Run as **Grok Build** (vault cwd). The Obsidian plugin only streams your reply and renders confirm cards.
+Run as **OpenClaw** (vault cwd). The Obsidian plugin only streams your reply and renders confirm cards.
 
 ## Goal
 

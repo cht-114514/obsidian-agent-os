@@ -4,10 +4,13 @@
  */
 import { renderAgentMessage, formatSkillMenu, composeWithRefs } from './renderer.js';
 import { handleConfirmAccept, handleConfirmReject, filterPluginSafeWrites } from './confirm-actions.js';
-import { sendChat, defaultGatewaySettings } from './gateway.js';
 import { parseFences } from './protocol-bridge.js';
 
-const DEFAULT_SETTINGS = defaultGatewaySettings();
+const DEFAULT_SETTINGS = {
+  gatewayUrl: 'ws://127.0.0.1:18789',
+  quiet: false,
+  skills: [],
+};
 
 /**
  * Core controller — Obsidian wires this via main-obsidian.js bundle entry if needed.
@@ -35,16 +38,10 @@ export class MeSoulController {
     let agentText;
     if (testOpts.mockReply != null) {
       agentText = testOpts.mockReply;
+    } else if (this.ask) {
+      agentText = await this.ask(composed);
     } else {
-      const res = await sendChat({
-        baseUrl: this.settings.gatewayUrl,
-        token: this.settings.token,
-        message: composed,
-      });
-      if (!res.ok) {
-        return { ok: false, error: res.error, html: '', blocks: [] };
-      }
-      agentText = res.text;
+      return { ok: false, error: 'OpenClaw 未连接', html: '', blocks: [] };
     }
     const rendered = renderAgentMessage(agentText, { quiet: this.settings.quiet });
     return { ok: true, agentText, composed, ...rendered };
@@ -73,6 +70,5 @@ export {
   composeWithRefs,
   formatSkillMenu,
   parseFences,
-  sendChat,
   DEFAULT_SETTINGS,
 };

@@ -1,6 +1,6 @@
 ---
 name: me-apply-insight
-description: Grok Build 将已确认 insight 合并进 profile。
+description: OpenClaw 将已确认 insight 合并进 profile。
 ---
 
 # me-apply-insight

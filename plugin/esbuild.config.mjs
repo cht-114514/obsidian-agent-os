@@ -34,6 +34,7 @@ await esbuild.build({
     'node:child_process',
     'node:path',
     'node:fs',
+    'ws',
   ],
   logLevel: 'info',
 });
@@ -58,6 +59,10 @@ function installTo(dir) {
 
 const vaultPlugin = resolveInstallDir();
 installTo(vaultPlugin);
+const mobilePlugin = join(__dirname, '../../../.obsidian-mobile/plugins/obsidian-agent-os');
+if (existsSync(join(__dirname, '../../../.obsidian-mobile')) && mobilePlugin !== vaultPlugin) {
+  installTo(mobilePlugin);
+}
 // Dev convenience: also refresh legacy folder name if present
 const legacy = join(__dirname, '../../../.obsidian/plugins/me-soul');
 if (existsSync(legacy) && legacy !== vaultPlugin) {

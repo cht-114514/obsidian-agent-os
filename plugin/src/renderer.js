@@ -18,7 +18,7 @@ export function renderAgentMessage(agentText, opts = {}) {
   const parts = blocks.map((b) => {
     switch (b.type) {
       case 'thought':
-        return `<details class="me-soul-thought" open><summary>思绪</summary><div class="me-soul-thought-body">${escapeHtml(b.content)}</div></details>`;
+        return `<details class="me-soul-thought"><summary>思绪</summary><div class="me-soul-thought-body">${escapeHtml(b.content)}</div></details>`;
       case 'confirm':
         return renderConfirmCard(b);
       case 'tool':

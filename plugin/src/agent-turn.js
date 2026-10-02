@@ -35,7 +35,7 @@ export function buildCommandBarPrompt(opts) {
   const parts = [];
   parts.push('# 任务：Obsidian 编辑器内联助手');
   parts.push('');
-  parts.push('你和在 Grok Build 里一样，用**自然语言完整理解**用户在说什么。');
+  parts.push('用自然语言完整理解用户在说什么。内核是 OpenClaw，这条命令不会自动改笔记。');
   parts.push('插件**不会**用关键词猜测意图；由你判断该准备「可写入」正文还是只回答。');
   parts.push('**重要：插件不会自动改笔记。** 即使用户要写入，也只把正文展示在悬浮窗；用户点「插入光标处 / 替换选区」后才会写入。');
   parts.push('这是可多轮的命令条会话：可参考「本会话此前对话」，以最新「用户说」为准。');

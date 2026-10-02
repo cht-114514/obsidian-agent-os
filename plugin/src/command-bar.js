@@ -12,13 +12,6 @@ import {
 } from './editor-apply.js';
 import { buildCommandBarPrompt, runAgentTurn } from './agent-turn.js';
 import {
-  REASONING_EFFORT_LEVELS,
-  formatGrokRuntimeLabel,
-  normalizeGrokProfiles,
-  normalizeReasoningEffort,
-  resolveGrokRuntime,
-} from './grok-runtime.js';
-import {
   makeFeedbackId,
   appendFeedbackEntry,
   updateFeedbackVote,
@@ -308,7 +301,7 @@ export function createCommandBarController(app, plugin, deps) {
       cls: 'me-soul-cmdbar-model',
       attr: {
         'aria-label': '切换模型',
-        title: '切换模型（Grok订阅 / 第三方）',
+        title: 'OpenClaw 模型',
       },
     });
     modelSelect.onchange = () => onModelChange();
@@ -367,16 +360,13 @@ export function createCommandBarController(app, plugin, deps) {
       attr: { type: 'button', 'aria-label': '关闭', title: 'Esc' },
       text: '×',
     });
-    closeBtn.onclick = () => {
-      if (busy) {
-        try {
-          plugin.acp?.cancel?.();
-        } catch {
-          /* */
-        }
-      }
+    const dismiss = (ev) => {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
       close();
     };
+    closeBtn.onclick = dismiss;
+    closeBtn.addEventListener('pointerup', dismiss);
 
     setupDrag(head, panelEl);
 
@@ -559,7 +549,7 @@ export function createCommandBarController(app, plugin, deps) {
       cls: 'me-soul-cmdbar-input',
       attr: {
         rows: '2',
-        placeholder: '改短一点 · 或输入 / 选用技能（如 /me-imagine）…',
+        placeholder: '改短一点，或直接提问',
         'aria-label': '指令',
       },
     });
@@ -670,7 +660,6 @@ export function createCommandBarController(app, plugin, deps) {
       'me-reflect-feedback': '根据反馈反思记忆',
       'me-care-check': '检查牵挂',
       'me-soul-promote': '升格 Soul',
-      'me-imagine': 'Grok Imagine 生图并插入笔记',
       memorized: '写入向量记忆库',
       'me-reindex': '（别名）同 memorized',
       'me-apply-pending': '合并已确认 pending',
@@ -694,7 +683,7 @@ export function createCommandBarController(app, plugin, deps) {
       if (inputEl) {
         inputEl.setAttr(
           'placeholder',
-          '改短一点 · 或输入 / 选用技能（如 /me-imagine）…'
+          '改短一点，或直接提问'
         );
       }
       return;
@@ -849,7 +838,7 @@ export function createCommandBarController(app, plugin, deps) {
     if (inputEl) {
       inputEl.setAttr(
         'placeholder',
-        '改短一点 · 或输入 / 选用技能（如 /me-imagine）…'
+        '改短一点，或直接提问'
       );
       inputEl.removeClass('is-skill-mode');
     }
@@ -857,33 +846,33 @@ export function createCommandBarController(app, plugin, deps) {
 
   function refreshModelSelect() {
     if (!modelSelect) return;
-    const profiles = normalizeGrokProfiles(plugin.settings.grokProfiles);
-    plugin.settings.grokProfiles = profiles;
-    const active = plugin.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
+    const prefs = plugin.connectionPrefs?.() || {};
+    const models = Array.isArray(plugin.kernelModels) ? plugin.kernelModels : [];
+    const options = models.length
+      ? models.map((model) => ({
+          id: model.id || model.key || model.name,
+          label: model.name || model.id || 'model',
+        }))
+      : [{ id: '', label: 'OpenClaw 默认' }];
     modelSelect.empty();
-    for (const p of profiles) {
+    for (const model of options) {
       const opt = modelSelect.createEl('option', {
-        text: p.label || p.model || p.id,
-        attr: { value: p.id },
+        text: model.label,
+        attr: { value: model.id },
       });
-      if (p.id === active) opt.selected = true;
-    }
-    try {
-      const rt = resolveGrokRuntime(plugin.settings);
-      modelSelect.setAttr('title', `当前：${formatGrokRuntimeLabel(rt)}`);
-    } catch {
-      /* */
+      if (model.id === prefs.model) opt.selected = true;
     }
     if (effortSelect) {
-      const activeProfile = profiles.find((p) => p.id === active) || profiles[0];
-      const current = normalizeReasoningEffort(activeProfile?.reasoningEffort);
+      const choices = plugin.thinkingChoices?.() || [];
+      const current = plugin.resolveOutgoingThinking?.() || '';
       effortSelect.empty();
-      for (const l of REASONING_EFFORT_LEVELS) {
+      const levels = choices.length ? choices : [{ id: '', label: '默认' }];
+      for (const level of levels) {
         const opt = effortSelect.createEl('option', {
-          text: l.value ? `思考:${l.value}` : '思考:默认',
-          attr: { value: l.value },
+          text: `思考:${level.label || level.id || '默认'}`,
+          attr: { value: level.id },
         });
-        if (l.value === current) opt.selected = true;
+        if (level.id === current) opt.selected = true;
       }
     }
   }
@@ -895,48 +884,19 @@ export function createCommandBarController(app, plugin, deps) {
       refreshModelSelect();
       return;
     }
-    try {
-      await plugin.setGrokReasoningEffort(effortSelect.value);
-      try {
-        plugin.acp?.resetSession?.();
-      } catch {
-        /* */
-      }
-      refreshModelSelect();
-      notify(`思考等级 → ${effortSelect.value || '默认'}（下一条生效）`);
-    } catch (e) {
-      notify(e?.message || String(e));
-      refreshModelSelect();
-    }
+    await plugin.setConnectionPrefs?.({ thinking: effortSelect.value });
+    notify(`思考等级 → ${effortSelect.value}`);
   }
 
   async function onModelChange() {
     if (!modelSelect) return;
-    const id = modelSelect.value;
-    if (!id || id === plugin.settings.grokActiveProfile) return;
     if (busy) {
       notify('请等当前回复结束后再切换模型');
       refreshModelSelect();
       return;
     }
-    try {
-      const rt = plugin.switchGrokProfile
-        ? await plugin.switchGrokProfile(id)
-        : (() => {
-            plugin.settings.grokActiveProfile = id;
-            return resolveGrokRuntime(plugin.settings);
-          })();
-      try {
-        plugin.acp?.resetSession?.();
-      } catch {
-        /* */
-      }
-      refreshModelSelect();
-      notify(`已切换 → ${formatGrokRuntimeLabel(rt)}（下一条生效）`);
-    } catch (e) {
-      notify(e?.message || String(e));
-      refreshModelSelect();
-    }
+    await plugin.setKernelModel?.(modelSelect.value);
+    notify('模型会在下一条生效');
   }
 
   function paintVoteBtns() {
@@ -1659,8 +1619,21 @@ export function createCommandBarController(app, plugin, deps) {
         }
       }
     };
+    const onOutside = (ev) => {
+      if (!root?.hasClass('is-open')) return;
+      const narrow = window.matchMedia?.('(max-width: 800px)').matches;
+      const mobile = !!(app?.isMobile || app?.isPhone || narrow);
+      if (!mobile) return;
+      const target = ev.target;
+      if (target instanceof Node && panelEl?.contains(target)) return;
+      close();
+    };
     document.addEventListener('keydown', onKey, true);
-    removeKeyHandler = () => document.removeEventListener('keydown', onKey, true);
+    document.addEventListener('pointerdown', onOutside, true);
+    removeKeyHandler = () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('pointerdown', onOutside, true);
+    };
 
     attachContextListeners();
 
@@ -1751,39 +1724,28 @@ export function createCommandBarController(app, plugin, deps) {
     lastVote = null;
     showFeedbackRow(false);
 
-    const skillCmd = activeSkill
-      ? { skillId: activeSkill.id, rest: text }
-      : parseSlashSkillCommand(text);
-    if (skillCmd) {
-      plugin.queueChatLaunch?.({
-        skillId: skillCmd.skillId,
-        text: skillCmd.rest,
-        autoSend: true,
-      });
-      if (inputEl) inputEl.value = '';
-      clearSkillUi();
-      notify(`正在全屏 Chat 运行 /${skillCmd.skillId}…`);
-      close({ reason: 'fullscreen', cancelIfBusy: false });
-      try {
-        await plugin.activateView?.();
-      } catch (e) {
-        notify(e?.message || '无法打开全屏对话');
-      }
-      return;
-    }
-
-    if (plugin.settings.engine === 'openclaw') {
-      notify('命令条目前需要 Grok Build 引擎（设置里切换）');
-      return;
-    }
-
     let client;
     try {
-      client = plugin.getAcp();
+      client = await plugin.ensureOperator();
+      if (!client?.prompt) throw new Error(client?.status?.message || 'OpenClaw 未连接');
     } catch (e) {
-      notify(e?.message || '无法启动内核');
+      notify(e?.message || '无法连接 OpenClaw');
       return;
     }
+    const sessionKey = `agent:${plugin.settings.agentId || 'main'}:aos-cmd`;
+    const adapter = {
+      sessionId: sessionKey,
+      prompt: (text, handlers) =>
+        client.prompt({
+          sessionKey,
+          message: text,
+          thinking: plugin.resolveOutgoingThinking?.() || '',
+          onText: handlers?.onText,
+          onThought: handlers?.onThought,
+          onTool: handlers?.onToolCall,
+        }),
+      cancel: () => client.abort(sessionKey),
+    };
 
     // Commit user turn to transcript + clear input so follow-ups are natural
     turns.push({ role: 'user', text });
@@ -1827,7 +1789,7 @@ export function createCommandBarController(app, plugin, deps) {
     };
 
     const result = await runAgentTurn({
-      acp: client,
+      acp: adapter,
       promptText,
       ephemeral: true,
       handlers: {

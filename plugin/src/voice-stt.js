@@ -34,106 +34,9 @@ export function resolveXaiApiKey(settings = {}) {
     /* ignore */
   }
 
-  const req = nodeRequire();
-  if (!req) return '';
-
-  try {
-    const fs = req('fs');
-    const path = req('path');
-    const os = req('os');
-    const home = os.homedir();
-
-    // OpenClaw config (static apiKey if present)
-    const ocPath = path.join(home, '.openclaw', 'openclaw.json');
-    if (fs.existsSync(ocPath)) {
-      const oc = JSON.parse(fs.readFileSync(ocPath, 'utf8'));
-      const xai = oc?.models?.providers?.xai || oc?.providers?.xai || {};
-      const k =
-        xai.apiKey ||
-        xai.api_key ||
-        xai.key ||
-        oc?.env?.XAI_API_KEY ||
-        oc?.skills?.entries?.['xai']?.apiKey;
-      if (k && String(k).trim()) return String(k).trim();
-    }
-
-    // OpenClaw OAuth profile (xai:email → access JWT) in agent sqlite
-    try {
-      const Database = req('better-sqlite3');
-      const dbPath = path.join(
-        home,
-        '.openclaw',
-        'agents',
-        'main',
-        'agent',
-        'openclaw-agent.sqlite'
-      );
-      if (fs.existsSync(dbPath)) {
-        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-        const row = db
-          .prepare('SELECT store_json FROM auth_profile_store WHERE store_key = ?')
-          .get('primary');
-        db.close();
-        if (row?.store_json) {
-          const store = JSON.parse(row.store_json);
-          const profiles = store?.profiles || {};
-          for (const [id, prof] of Object.entries(profiles)) {
-            if (String(id).startsWith('xai:') && prof?.access) {
-              return String(prof.access).trim();
-            }
-            if (prof?.provider === 'xai' && prof?.access) {
-              return String(prof.access).trim();
-            }
-          }
-        }
-      }
-    } catch {
-      // better-sqlite3 may be unavailable; fall through to JSON parse via child
-    }
-
-    // Fallback: shell-out python/sqlite3 CLI (no native dep)
-    try {
-      const { execFileSync } = req('child_process');
-      const dbPath = path.join(
-        home,
-        '.openclaw',
-        'agents',
-        'main',
-        'agent',
-        'openclaw-agent.sqlite'
-      );
-      if (fs.existsSync(dbPath)) {
-        const out = execFileSync(
-          'sqlite3',
-          [dbPath, "SELECT store_json FROM auth_profile_store WHERE store_key='primary';"],
-          { encoding: 'utf8', timeout: 2000 }
-        );
-        const store = JSON.parse(out.trim() || '{}');
-        for (const [id, prof] of Object.entries(store?.profiles || {})) {
-          if ((String(id).startsWith('xai:') || prof?.provider === 'xai') && prof?.access) {
-            return String(prof.access).trim();
-          }
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
-    // Grok desktop OIDC access token (may work as Bearer for some endpoints)
-    const authPath = path.join(home, '.grok', 'auth.json');
-    if (fs.existsSync(authPath)) {
-      const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-      for (const v of Object.values(auth || {})) {
-        if (v && typeof v === 'object' && v.key && String(v.key).length > 12) {
-          return String(v.key).trim();
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('resolveXaiApiKey failed', e);
-  }
   return '';
 }
+
 
 /**
  * Downsample Float32 mono to target rate.
@@ -404,6 +307,9 @@ export class VoiceInputSession {
   }
 
   async start() {
+    if (typeof window !== 'undefined' && window.Capacitor && !globalThis.process?.versions?.node) {
+      throw new Error('手机端语音暂不可用');
+    }
     if (!this.apiKey) throw new Error('缺少 xAI API Key（设置里填写，或配置 XAI_API_KEY / OpenClaw）');
     if (!navigator?.mediaDevices?.getUserMedia) {
       throw new Error('当前环境无法访问麦克风');
@@ -458,16 +364,10 @@ export class VoiceInputSession {
   async _tryStartWebSocket() {
     let WebSocketImpl;
     try {
-      // Bundled by esbuild when available; avoids bare require('ws') at runtime
-      const mod = await import('ws');
-      WebSocketImpl = mod.default || mod.WebSocket || mod;
+      const req = nodeRequire();
+      WebSocketImpl = req?.('ws');
     } catch {
-      try {
-        const req = nodeRequire();
-        WebSocketImpl = req?.('ws');
-      } catch {
-        return false;
-      }
+      return false;
     }
     if (!WebSocketImpl) return false;
 

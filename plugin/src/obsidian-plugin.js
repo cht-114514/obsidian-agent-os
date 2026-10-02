@@ -1,5 +1,5 @@
 /**
- * Obsidian Agent OS Obsidian plugin — IDE command bar (primary) + sidebar/home chat (secondary).
+ * Obsidian Agent OS — OpenClaw client: IDE command bar + full-screen chat.
  */
 import {
   Plugin,
@@ -14,23 +14,19 @@ import {
   renderMath,
   finishRenderMath,
 } from 'obsidian';
-import { MeSoulController } from './main.js';
 import { mountMeSoulChat } from './chat-panel.js';
-import { GrokAcpClient, makeVaultAutoApprove } from './acp-client.js';
-import { checkWritePolicy } from './protocol-bridge.js';
-import { MeSoulSetupModal, seedVaultScaffold, needsScaffold } from './setup.js';
 import { createCommandBarController } from './command-bar.js';
 import { createVoiceLiveController } from './voice-live.js';
+import { KernelClient, resolveThinking, thinkingLevelsOf } from './kernel/kernel-client.js';
+import { VaultNode } from './kernel/vault-node.js';
 import {
-  DEFAULT_GROK_PROFILES,
-  REASONING_EFFORT_LEVELS,
-  formatGrokRuntimeLabel,
-  formatModelDisplayName,
-  grokRuntimeSignature,
-  normalizeGrokProfiles,
-  normalizeReasoningEffort,
-  resolveGrokRuntime,
-} from './grok-runtime.js';
+  createLocalStorageStore,
+  createMemoryStore,
+  loadOrCreateIdentity,
+  readSecret,
+  writeSecret,
+} from './kernel/device-identity.js';
+import { executeVaultCommand } from './kernel/vault-tools.js';
 
 export const VIEW_TYPE = 'me-soul-chat';
 
@@ -40,6 +36,7 @@ class MeSoulView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this._mount = null;
+    this._sessionTitle = '';
   }
 
   getViewType() {
@@ -47,7 +44,7 @@ class MeSoulView extends ItemView {
   }
 
   getDisplayText() {
-    return this.plugin?.settings?.agentName || 'Agent';
+    return this._sessionTitle || 'Agent';
   }
 
   getIcon() {
@@ -60,14 +57,18 @@ class MeSoulView extends ItemView {
     // Full-screen main-tab chat (Claude / ChatGPT style) — not a right sidebar
     this._mount = mountMeSoulChat(this.contentEl, {
       app: this.app,
-      controller: this.plugin.controller,
       plugin: this.plugin,
       Notice,
       MarkdownRenderer,
       loadMathJax,
       renderMath,
       finishRenderMath,
-      mode: 'fullscreen',
+      view: this,
+      onTitle: (title) => {
+        this._sessionTitle = title || '';
+        this.leaf?.updateHeader?.();
+      },
+      onClose: () => this.leaf?.detach?.(),
     });
   }
 
@@ -85,45 +86,13 @@ class MeSoulView extends ItemView {
   }
 }
 
-/** Markdown code-block host for homepage embed */
-class MeSoulHomeHost {
-  /**
-   * @param {HTMLElement} el
-   * @param {MeSoulPlugin} plugin
-   */
-  constructor(el, plugin) {
-    this.el = el;
-    this.plugin = plugin;
-    this._mount = null;
-  }
-
-  onload() {
-    this.el.empty();
-    this.el.addClass('me-soul-home-host');
-    this._mount = mountMeSoulChat(this.el, {
-      app: this.plugin.app,
-      controller: this.plugin.controller,
-      plugin: this.plugin,
-      Notice,
-      MarkdownRenderer,
-      loadMathJax,
-      renderMath,
-      finishRenderMath,
-      mode: 'home',
-    });
-  }
-
-  onunload() {
-    this._mount?.destroy?.();
-    this._mount = null;
-  }
-}
-
 export default class MeSoulPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
-    this.controller = new MeSoulController(this.settings);
-    this.acp = null;
+    await this.publishSharedGateway();
+    this.operator = null;
+    this.vaultNode = null;
+    this.kernelModels = [];
     /** @type {{ skillId: string, text?: string, autoSend?: boolean } | null} */
     this._pendingChatLaunch = null;
     this.commandBar = createCommandBarController(this.app, this, {
@@ -145,14 +114,6 @@ export default class MeSoulPlugin extends Plugin {
       this.voiceLive = null;
       this.commandBar?.destroy?.();
       this.commandBar = null;
-    });
-
-    // Homepage: ```me-soul``` code block (secondary deep entry)
-    this.registerMarkdownCodeBlockProcessor('me-soul', (source, el, ctx) => {
-      const host = new MeSoulHomeHost(el, this);
-      host.onload();
-      // ensure full-height in reading view
-      el.parentElement?.addClass('me-soul-block-parent');
     });
 
     this.registerView(VIEW_TYPE, (leaf) => new MeSoulView(leaf, this));
@@ -186,41 +147,6 @@ export default class MeSoulPlugin extends Plugin {
       name: 'Open Agent full-screen chat',
       callback: () => this.activateView(),
     });
-    this.addCommand({
-      id: 'obsidian-agent-os-open-home',
-      name: 'Open home (Obsidian Agent OS)',
-      callback: () => this.openHome(),
-    });
-    this.addCommand({
-      id: 'obsidian-agent-os-toggle-quiet',
-      name: 'Toggle Quiet (今日少说话)',
-      callback: async () => {
-        this.controller.setQuiet(!this.controller.settings.quiet);
-        this.settings.quiet = this.controller.settings.quiet;
-        await this.saveSettings();
-        new Notice(this.settings.quiet ? 'Quiet ON' : 'Quiet OFF');
-      },
-    });
-    this.addCommand({
-      id: 'obsidian-agent-os-setup',
-      name: 'Run setup wizard (人格 / 模板)',
-      callback: () => this.openSetup(),
-    });
-    this.addCommand({
-      id: 'obsidian-agent-os-seed-templates',
-      name: 'Seed soul templates (不覆盖已有)',
-      callback: async () => {
-        await seedVaultScaffold(this.app, {
-          agentName: this.settings.agentName || 'Agent',
-          userName: this.settings.userName || 'User',
-          agentVibe: this.settings.agentVibe || '',
-          homePath: this.settings.homePath || '00-首页.md',
-          createHome: true,
-          overwrite: false,
-        });
-        new Notice('已写入通用 soul 模板（跳过已有文件）');
-      },
-    });
 
     // Editor context menu: process selection via command bar
     this.registerEvent(
@@ -247,15 +173,24 @@ export default class MeSoulPlugin extends Plugin {
       this.acp?.stop?.();
       this.acp = null;
     });
+    this.bindGatewayWake();
+  }
 
-    this.app.workspace.onLayoutReady(async () => {
-      const missing = await needsScaffold(this.app);
-      if (!this.settings.setupDone || missing) {
-        this.openSetup();
-      } else if (this.settings.openHomeOnStart) {
-        this.openHome();
-      }
-    });
+  /** Phone sleep and app switches drop the socket without a close event. Probe, then reconnect. */
+  bindGatewayWake() {
+    let last = 0;
+    const wake = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - last < 1500) return;
+      last = now;
+      this.operator?.revive?.().catch(() => {});
+      this.vaultNode?.revive?.().catch(() => {});
+    };
+    this.registerDomEvent(document, 'visibilitychange', wake);
+    this.registerDomEvent(window, 'focus', wake);
+    this.registerDomEvent(window, 'online', wake);
+    this.registerDomEvent(window, 'pageshow', wake);
   }
 
   /**
@@ -346,108 +281,275 @@ export default class MeSoulPlugin extends Plugin {
     this.register(() => removeChip());
   }
 
-  openSetup() {
-    new MeSoulSetupModal(this.app, this, {
-      onDone: () => {
-        if (this.settings.openHomeOnStart) this.openHome();
-      },
-    }).open();
-  }
-
-  /** True when Grok ACP (local spawn) is available. */
   isDesktopKernelAvailable() {
     return !Platform.isMobileApp && !Platform.isMobile;
   }
 
-  /** Active Grok Build model + endpoint (for UI + ACP). */
-  getGrokRuntime() {
-    return resolveGrokRuntime(this.settings);
+  secretStore() {
+    const vaultId = this.app?.appId || this.app?.vault?.getName?.() || 'vault';
+    if (typeof localStorage !== 'undefined') {
+      return createLocalStorageStore(localStorage, `aos:${vaultId}:`);
+    }
+    this._memorySecrets ||= createMemoryStore();
+    return this._memorySecrets;
   }
 
-  /**
-   * Switch profile from chat header/settings. Restarts ACP on next prompt.
-   * @param {string} profileId
-   */
-  async switchGrokProfile(profileId) {
-    const profiles = normalizeGrokProfiles(this.settings.grokProfiles);
-    const p = profiles.find((x) => x.id === profileId);
-    if (!p) throw new Error(`未知模型配置档：${profileId}`);
-    this.settings.grokActiveProfile = p.id;
-    this.settings.grokModel = p.model || this.settings.grokModel;
-    this.settings.grokProfiles = profiles;
-    await this.saveSettings();
-    this.invalidateAcp();
-    return this.getGrokRuntime();
-  }
-
-  /**
-   * Set reasoning effort on the active profile. Restarts kernel on next prompt.
-   * @param {string} effort '' | minimal | low | medium | high | xhigh | max
-   */
-  async setGrokReasoningEffort(effort) {
-    const profiles = normalizeGrokProfiles(this.settings.grokProfiles);
-    const activeId = this.settings.grokActiveProfile || profiles[0]?.id || 'supergrok';
-    const p = profiles.find((x) => x.id === activeId) || profiles[0];
-    if (!p) throw new Error('没有可用的模型配置档');
-    p.reasoningEffort = normalizeReasoningEffort(effort);
-    this.settings.grokProfiles = profiles;
-    await this.saveSettings();
-    this.invalidateAcp();
-    return this.getGrokRuntime();
-  }
-
-  /** Drop running Grok ACP so next getAcp() rebuilds with current settings. */
-  invalidateAcp() {
+  hostGatewayToken() {
+    if (Platform.isMobile || Platform.isMobileApp) return '';
     try {
-      this.acp?.stop?.();
+      const req = typeof require === 'function' ? require : null;
+      if (!req) return '';
+      const fs = req('fs');
+      const os = req('os');
+      const path = req('path');
+      const file = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const token = cfg?.gateway?.auth?.token;
+      return typeof token === 'string' ? token.trim() : '';
+    } catch {
+      return '';
+    }
+  }
+
+  isLoopbackUrl(url) {
+    try {
+      const parsed = new URL(String(url || '').replace(/^ws/i, 'http'));
+      return parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1';
+    } catch {
+      return false;
+    }
+  }
+
+  connectionPrefs() {
+    const store = this.secretStore();
+    const mobile = Platform.isMobile || Platform.isMobileApp || document.body?.classList?.contains('is-mobile');
+    let url = readSecret(store, 'gatewayUrl') || this.settings.gatewayUrl || 'ws://127.0.0.1:18789';
+    if (mobile && this.isLoopbackUrl(url)) {
+      url = this.settings.gatewayRemoteUrl || 'wss://mac-mini.tail3b2ec3.ts.net';
+    }
+    return {
+      url,
+      token: this.settings.gatewayToken || readSecret(store, 'gatewayToken') || this.hostGatewayToken(),
+      vaultNode: readSecret(store, 'vaultNode') === '1',
+      thinking: readSecret(store, 'thinking') || this.settings.thinking || '',
+      model: readSecret(store, 'model') || '',
+    };
+  }
+
+  async setConnectionPrefs(patch) {
+    const store = this.secretStore();
+    if (patch.url != null) writeSecret(store, 'gatewayUrl', patch.url);
+    if (patch.token != null) {
+      writeSecret(store, 'gatewayToken', patch.token);
+      this.settings.gatewayToken = String(patch.token || '').trim();
+      await this.saveSettings();
+    }
+    if (patch.vaultNode != null) writeSecret(store, 'vaultNode', patch.vaultNode ? '1' : '');
+    if (patch.thinking != null) writeSecret(store, 'thinking', patch.thinking);
+    if (patch.model != null) writeSecret(store, 'model', patch.model);
+    this.invalidateKernel();
+  }
+
+  deviceProfile() {
+    if (Platform.isMobile || Platform.isMobileApp) {
+      return { platform: 'ios', deviceFamily: 'iphone' };
+    }
+    return { platform: 'macos', deviceFamily: 'mac' };
+  }
+
+  websocketImpl() {
+    if (typeof WebSocket !== 'undefined') return WebSocket;
+    return globalThis.WebSocket;
+  }
+
+  vaultAdapter() {
+    const vault = this.app.vault;
+    return {
+      read: async (path) => {
+        const file = vault.getAbstractFileByPath(path);
+        if (!file) throw new Error(`找不到 ${path}`);
+        return vault.read(file);
+      },
+      write: async (path, content) => {
+        const existing = vault.getAbstractFileByPath(path);
+        if (existing) {
+          await vault.modify(existing, content);
+          return;
+        }
+        const parts = path.split('/');
+        parts.pop();
+        if (parts.length) {
+          const folder = parts.join('/');
+          if (!vault.getAbstractFileByPath(folder)) {
+            try {
+              await vault.createFolder(folder);
+            } catch {
+              /* already exists */
+            }
+          }
+        }
+        await vault.create(path, content);
+      },
+      list: async (prefix = '') =>
+        vault
+          .getMarkdownFiles()
+          .map((file) => file.path)
+          .filter((path) => !prefix || path.startsWith(prefix)),
+      search: async (query, limit) => {
+        const q = String(query || '').toLowerCase();
+        const hits = [];
+        for (const file of vault.getMarkdownFiles()) {
+          if (hits.length >= limit) break;
+          if (file.path.toLowerCase().includes(q)) {
+            hits.push({ path: file.path, title: file.basename, excerpt: '' });
+            continue;
+          }
+          const text = await vault.cachedRead(file);
+          const index = text.toLowerCase().indexOf(q);
+          if (index >= 0) {
+            hits.push({
+              path: file.path,
+              title: file.basename,
+              excerpt: text.slice(Math.max(0, index - 40), index + 120),
+            });
+          }
+        }
+        return hits;
+      },
+      activeNote: () => {
+        const file = this.app.workspace.getActiveFile();
+        return file ? { path: file.path, name: file.basename } : null;
+      },
+    };
+  }
+
+  invalidateKernel() {
+    try {
+      this.operator?.disconnect();
     } catch {
       /* */
     }
-    this.acp = null;
-    this._acpSig = null;
+    try {
+      this.vaultNode?.disconnect();
+    } catch {
+      /* */
+    }
+    this.operator = null;
+    this.vaultNode = null;
   }
 
-  /**
-   * Lazily create / reuse the Grok ACP client bound to this vault.
-   * Mobile: throws a clear error (plugin still loads for UI; skills need Grok Build ACP).
-   * Rebuilds when model / base URL / API key / bin path change.
-   */
-  getAcp() {
-    if (!this.isDesktopKernelAvailable()) {
-      throw new Error(
-        '手机端无法启动本地 Grok 内核（需要桌面 Node）。可：1) 用电脑聊；2) 设置里改用 OpenClaw Gateway（HTTP）；3) 仅用本地技能写 vault。'
-      );
+  async ensureOperator(opts = {}) {
+    if (opts.force) this.invalidateKernel();
+    if (this.operator?.revive) {
+      const live = await this.operator.revive();
+      if (live && !this.kernelModels?.length) {
+        const [models, agents] = await Promise.all([
+          this.operator.listModels().catch(() => []),
+          this.operator.listAgents().catch(() => []),
+        ]);
+        this.kernelModels = models;
+        this.kernelAgents = agents;
+      }
+      return this.operator;
     }
-    const rt = this.getGrokRuntime();
-    const sig = grokRuntimeSignature(rt);
-    if (this.acp && this._acpSig && this._acpSig !== sig) {
-      this.invalidateAcp();
+    if (this.operator) return this.operator;
+    const prefs = this.connectionPrefs();
+    if (!prefs.token) {
+      this.operator = {
+        status: { state: 'offline', role: 'operator', message: '还没有填写 Gateway token' },
+        onStatus() {
+          return () => {};
+        },
+      };
+      return this.operator;
     }
-    if (this.acp) return this.acp;
-    const base =
-      this.app.vault.adapter?.basePath ||
-      this.app.vault.adapter?.getBasePath?.() ||
-      (typeof process !== 'undefined' && process.cwd ? process.cwd() : '');
-    if (!base) {
-      throw new Error('拿不到 vault 绝对路径，无法启动 Grok ACP');
-    }
-    this.acp = new GrokAcpClient({
-      binPath: rt.binPath,
-      cwd: base,
-      model: rt.model,
-      baseUrl: rt.baseUrl,
-      apiKey: rt.apiKey,
-      isThirdParty: rt.isThirdParty,
-      label: rt.label,
-      profileId: rt.profileId,
-      reasoningEffort: rt.reasoningEffort,
-      autoApprove: makeVaultAutoApprove(
-        (rel) => checkWritePolicy(rel).allowed,
-        base
-      ),
+    const profile = this.deviceProfile();
+    const identity = loadOrCreateIdentity(this.secretStore());
+    const storedDeviceToken = readSecret(this.secretStore(), 'operatorDeviceToken');
+    const client = new KernelClient({
+      url: prefs.url,
+      token: prefs.token,
+      identity,
+      role: 'operator',
+      platform: profile.platform,
+      deviceFamily: profile.deviceFamily,
+      displayName: `Obsidian · ${this.settings.agentName || 'Agent'}`,
+      deviceToken: storedDeviceToken,
+      WebSocketImpl: this.websocketImpl(),
     });
-    this._acpSig = sig;
-    return this.acp;
+    client.onStatus((status) => {
+      if (status.deviceToken) writeSecret(this.secretStore(), 'operatorDeviceToken', status.deviceToken);
+    });
+    this.operator = client;
+    await client.connect();
+    if (client.deviceToken) writeSecret(this.secretStore(), 'operatorDeviceToken', client.deviceToken);
+    if (client.status.state === 'live') {
+      const [models, agents] = await Promise.all([
+        client.listModels().catch(() => []),
+        client.listAgents().catch(() => []),
+      ]);
+      this.kernelModels = models;
+      this.kernelAgents = agents;
+    }
+    if (prefs.vaultNode) this.ensureVaultNode().catch(() => {});
+    return client;
+  }
+
+  activeThinkingProfile() {
+    const selected = this.connectionPrefs().model;
+    const models = Array.isArray(this.kernelModels) ? this.kernelModels : [];
+    if (selected) {
+      const model = models.find(
+        (item) => item.id === selected || `${item.provider}/${item.id}` === selected
+      );
+      if (model && thinkingLevelsOf(model).length) return model;
+    }
+    const agentId = this.settings.agentId || 'main';
+    const agents = Array.isArray(this.kernelAgents) ? this.kernelAgents : [];
+    const agent = agents.find((item) => item.id === agentId) || agents[0];
+    if (agent && thinkingLevelsOf(agent).length) return agent;
+    return null;
+  }
+
+  thinkingChoices() {
+    return thinkingLevelsOf(this.activeThinkingProfile());
+  }
+
+  resolveOutgoingThinking() {
+    return resolveThinking(this.connectionPrefs().thinking, this.activeThinkingProfile());
+  }
+
+  async ensureVaultNode() {
+    const prefs = this.connectionPrefs();
+    if (!prefs.vaultNode || !prefs.token) return null;
+    if (this.vaultNode) return this.vaultNode;
+    const profile = this.deviceProfile();
+    const identity = loadOrCreateIdentity(this.secretStore());
+    const node = new VaultNode({
+      url: prefs.url,
+      token: prefs.token,
+      identity,
+      platform: profile.platform,
+      deviceFamily: profile.deviceFamily,
+      deviceToken: readSecret(this.secretStore(), 'nodeDeviceToken'),
+      displayName: 'Obsidian vault',
+      WebSocketImpl: this.websocketImpl(),
+      vault: this.vaultAdapter(),
+    });
+    node.onStatus((status) => {
+      if (status.deviceToken) writeSecret(this.secretStore(), 'nodeDeviceToken', status.deviceToken);
+    });
+    this.vaultNode = node;
+    await node.connect();
+    return node;
+  }
+
+  async setKernelModel(model) {
+    await this.setConnectionPrefs({ model });
+  }
+
+  runVaultCommand(command, params) {
+    return executeVaultCommand(command, params, this.vaultAdapter());
   }
 
   /**
@@ -473,15 +575,18 @@ export default class MeSoulPlugin extends Plugin {
     return q;
   }
 
-  async openHome() {
+  async openHome(opts = {}) {
     const homePath = this.settings.homePath || '00-首页.md';
     const file = this.app.vault.getAbstractFileByPath(homePath);
     if (!file) {
-      new Notice(`找不到首页：${homePath}（可在设置里改路径，或运行 Setup wizard）`);
-      return;
+      if (opts.notice) {
+        new Notice(`找不到首页：${homePath}`);
+      }
+      return false;
     }
     const leaf = this.app.workspace.getLeaf(false);
     await leaf.openFile(file);
+    return true;
   }
 
   /**
@@ -534,19 +639,14 @@ export default class MeSoulPlugin extends Plugin {
   async loadSettings() {
     this.settings = Object.assign(
       {
-        engine: 'grok',
-        grokBin: '~/.grok/bin/grok',
-        grokModel: 'grok-build',
-        /** Optional default third-party OpenAI-compatible base (profile can override). */
-        grokApiBaseUrl: '',
-        /** Optional API key for third-party / override SuperGrok session auth for this plugin only. */
-        grokApiKey: '',
-        /** Named profiles for sidebar quick-switch. */
-        grokProfiles: DEFAULT_GROK_PROFILES.map((p) => ({ ...p })),
-        grokActiveProfile: 'supergrok',
-        gatewayUrl: 'http://127.0.0.1:18789',
-        token: '',
+        gatewayUrl: 'ws://127.0.0.1:18789',
+        gatewayRemoteUrl: 'wss://mac-mini.tail3b2ec3.ts.net',
+        gatewayToken: '',
+        agentId: 'main',
+        thinking: '',
         quiet: false,
+        /** Phone only. When on, the fullscreen chat hides Obsidian's bottom navbar. */
+        hideMobileNavbar: false,
         /** IDE primary entry; sidebar/home are secondary. */
         commandBarEnabled: true,
         /** Optional soul pack inject into command-bar prompts (heavier). */
@@ -587,40 +687,64 @@ export default class MeSoulPlugin extends Plugin {
           'me-apply-pending',
           'me-apply-insight',
           'me-soul-promote',
-          'me-imagine',
           'memorized',
           'me-reindex', // alias of memorized
         ],
       },
       (await this.loadData()) || {}
     );
-    // Merge newly shipped skills into saved settings (data.json may be stale).
-    const builtinSkills = [
-      'me-digest',
-      'me-write-insight',
-      'me-reflect-feedback',
-      'me-care-check',
-      'me-apply-pending',
-      'me-apply-insight',
-      'me-soul-promote',
-      'me-imagine',
-      'memorized',
-      'me-reindex',
+    this.settings.skills = [];
+    const dropped = [
+      'engine',
+      'grokBin',
+      'grokModel',
+      'grokApiBaseUrl',
+      'grokApiKey',
+      'grokProfiles',
+      'grokActiveProfile',
+      'token',
     ];
-    const saved = Array.isArray(this.settings.skills) ? this.settings.skills : [];
-    this.settings.skills = [...new Set([...saved, ...builtinSkills])];
-    this.settings.grokProfiles = normalizeGrokProfiles(this.settings.grokProfiles);
-    if (!this.settings.grokActiveProfile) {
-      this.settings.grokActiveProfile = 'supergrok';
+    let migrated = false;
+    if (!this.settings.agentName || this.settings.agentName === '联合创始人') {
+      this.settings.agentName = 'Agent';
+      migrated = true;
     }
+    if (this.settings.token) {
+      writeSecret(this.secretStore(), 'gatewayToken', this.settings.token);
+      migrated = true;
+    }
+    if (String(this.settings.gatewayUrl || '').startsWith('http')) {
+      this.settings.gatewayUrl = this.settings.gatewayUrl
+        .replace(/^http:\/\//, 'ws://')
+        .replace(/^https:\/\//, 'wss://')
+        .replace(/\/$/, '');
+      migrated = true;
+    }
+    for (const key of dropped) {
+      if (key in this.settings) {
+        delete this.settings[key];
+        migrated = true;
+      }
+    }
+    if (migrated) await this.saveData(this.settings);
+  }
+
+  async publishSharedGateway() {
+    const token = this.hostGatewayToken();
+    let changed = false;
+    if (token && this.settings.gatewayToken !== token) {
+      this.settings.gatewayToken = token;
+      changed = true;
+    }
+    if (!this.settings.gatewayRemoteUrl) {
+      this.settings.gatewayRemoteUrl = 'wss://mac-mini.tail3b2ec3.ts.net';
+      changed = true;
+    }
+    if (changed) await this.saveData(this.settings);
   }
 
   async saveSettings() {
-    this.settings.grokProfiles = normalizeGrokProfiles(this.settings.grokProfiles);
     await this.saveData(this.settings);
-    if (this.controller) {
-      this.controller.settings = { ...this.settings };
-    }
   }
 }
 
@@ -682,54 +806,123 @@ class MeSoulSettingTab extends PluginSettingTab {
     hero.createEl('h2', { text: 'Obsidian Agent OS' });
     hero.createEl('p', {
       cls: 'me-soul-settings-hero-sub',
-      text: 'beta · 人格与密钥只存在本 vault 的插件 data.json，不会随源码分发。',
+      text: 'OpenClaw 客户端。手机走 Tailscale，命令条只是附加入口。',
     });
 
     // ============================================================
-    // 1. 快速开始
+    // 1. OpenClaw 连接
     // ============================================================
     {
       const body = this.section(containerEl, {
-        title: '快速开始',
-        desc: '首次使用先跑向导；日常开关放这里。',
+        title: 'OpenClaw 内核',
+        desc: '插件只做客户端。Gateway token 会跟着 vault 同步到手机；每台设备的身份密钥仍然只留在本机。',
         badge: '1',
+      });
+      const prefs = this.plugin.connectionPrefs();
+      const status = this.plugin.operator?.status;
+
+      new Setting(body)
+        .setName('连接状态')
+        .setDesc(status?.message || '打开全屏对话后会自动连接');
+
+      new Setting(body)
+        .setName('聊天时隐藏底栏')
+        .setDesc('只在手机上生效。打开后，全屏对话不再为 Obsidian 底栏留空。')
+        .addToggle((toggle) =>
+          toggle.setValue(!!s.hideMobileNavbar).onChange(async (value) => {
+            this.plugin.settings.hideMobileNavbar = value;
+            document.body.classList.toggle('aos-hide-navbar', !!value);
+            await this.plugin.saveSettings();
+          })
+        );
+
+      if (status?.approveCommand) {
+        new Setting(body)
+          .setName('等待批准')
+          .setDesc(status.approveCommand)
+          .addButton((b) =>
+            b.setButtonText('复制命令').onClick(async () => {
+              try {
+                await navigator.clipboard.writeText(status.approveCommand);
+                new Notice('已复制');
+              } catch {
+                new Notice(status.approveCommand);
+              }
+            })
+          );
+      }
+
+      new Setting(body)
+        .setName('Gateway URL')
+        .setDesc('本机用 ws://127.0.0.1:18789。其他设备用 tailnet 地址，例如 ws://100.x.x.x:18789 或 wss://主机名。')
+        .addText((t) =>
+          t
+            .setPlaceholder('ws://127.0.0.1:18789')
+            .setValue(prefs.url || '')
+            .onChange(async (v) => {
+              await this.plugin.setConnectionPrefs({ url: v.trim() });
+            })
+        );
+
+      new Setting(body)
+        .setName('Gateway token')
+        .setDesc('和 vault 一起同步。手机连的是 Tailscale 地址，不会用这台 Mac 的 127.0.0.1。')
+        .addText((t) => {
+          t.inputEl.type = 'password';
+          t.setValue(prefs.token || '').onChange(async (v) => {
+            await this.plugin.setConnectionPrefs({ token: v.trim() });
+          });
+        });
+
+      new Setting(body)
+        .setName('作为 vault 节点')
+        .setDesc('只在常开的那台 Obsidian 上打开。它向 OpenClaw 发布 vault 读写工具。手机默认只做界面。')
+        .addToggle((t) =>
+          t.setValue(!!prefs.vaultNode).onChange(async (v) => {
+            await this.plugin.setConnectionPrefs({ vaultNode: v });
+            if (v) await this.plugin.ensureVaultNode().catch((e) => new Notice(e?.message || String(e)));
+          })
+        );
+
+      new Setting(body)
+        .setName('Agent')
+        .setDesc('OpenClaw agent id，默认 main')
+        .addText((t) =>
+          t.setValue(s.agentId || 'main').onChange(async (v) => {
+            s.agentId = v.trim() || 'main';
+            await this.plugin.saveSettings();
+          })
+        );
+
+      new Setting(body)
+        .setName('重新连接')
+        .addButton((b) =>
+          b.setButtonText('连接').onClick(async () => {
+            try {
+              await this.plugin.ensureOperator({ force: true });
+              const next = this.plugin.operator?.status;
+              new Notice(next?.message || '已连接');
+              this.display();
+            } catch (e) {
+              new Notice(e?.message || String(e));
+            }
+          })
+        );
+    }
+
+    // ============================================================
+    // 2. 命令条
+    // ============================================================
+    {
+      const body = this.section(containerEl, {
+        title: '命令条',
+        desc: '笔记里的悬浮入口，不是主界面。',
+        badge: '2',
       });
 
       new Setting(body)
-        .setName('初始配置向导')
-        .setDesc('命名 Agent、写入通用 soul 模板')
-        .addButton((b) =>
-          b.setButtonText('打开 Setup').setCta().onClick(() => this.plugin.openSetup())
-        );
-
-      new Setting(body)
-        .setName('启动时打开首页')
-        .setDesc(
-          `默认关闭（IDE 模式）。开启后 layout ready 打开「${s.homePath || '00-首页.md'}」`
-        )
-        .addToggle((t) =>
-          t.setValue(!!s.openHomeOnStart).onChange(async (v) => {
-            s.openHomeOnStart = v;
-            await this.plugin.saveSettings();
-          })
-        );
-
-      new Setting(body)
-        .setName('今日少说话（Quiet）')
-        .setDesc('收起思绪块，回复更克制（侧栏/首页）')
-        .addToggle((t) =>
-          t.setValue(!!s.quiet).onChange(async (v) => {
-            s.quiet = v;
-            this.plugin.controller.setQuiet(v);
-            await this.plugin.saveSettings();
-          })
-        );
-
-      new Setting(body)
-        .setName('Agent 命令条（IDE）')
-        .setDesc(
-          '主入口：快捷键召唤悬浮条（默认 Mod+Shift+Space）。用自然语言改写/续写/提问。'
-        )
+        .setName('命令条')
+        .setDesc('快捷键 Mod+Shift+Space，在笔记里改写或提问。')
         .addToggle((t) =>
           t.setValue(s.commandBarEnabled !== false).onChange(async (v) => {
             s.commandBarEnabled = v;
@@ -752,494 +945,16 @@ class MeSoulSettingTab extends PluginSettingTab {
           })
         );
 
-      new Setting(body)
-        .setName('命令条注入 Soul 人格')
-        .setDesc('默认关闭以保持轻量；开启后把 soul 摘要打进命令条 prompt')
-        .addToggle((t) =>
-          t.setValue(!!s.commandBarInjectSoul).onChange(async (v) => {
-            s.commandBarInjectSoul = v;
-            await this.plugin.saveSettings();
-          })
-        );
     }
 
     // ============================================================
-    // 2. 人格与界面
-    // ============================================================
-    {
-      const body = this.section(containerEl, {
-        title: '人格与界面',
-        desc: '聊天里显示的名字、首页入口。',
-        badge: '2',
-      });
-
-      new Setting(body)
-        .setName('Agent 显示名')
-        .setDesc('顶栏标题')
-        .addText((t) =>
-          t.setValue(s.agentName || 'Agent').onChange(async (v) => {
-            s.agentName = v.trim() || 'Agent';
-            await this.plugin.saveSettings();
-          })
-        );
-
-      new Setting(body)
-        .setName('用户称呼')
-        .setDesc('写入 soul 模板时用')
-        .addText((t) =>
-          t.setValue(s.userName || '').onChange(async (v) => {
-            s.userName = v.trim();
-            await this.plugin.saveSettings();
-          })
-        );
-
-      new Setting(body)
-        .setName('首页路径')
-        .setDesc('嵌入 ```me-soul``` 代码块的笔记')
-        .addText((t) =>
-          t.setValue(s.homePath || '00-首页.md').onChange(async (v) => {
-            s.homePath = v.trim() || '00-首页.md';
-            await this.plugin.saveSettings();
-          })
-        );
-    }
-
-    // ============================================================
-    // 3. 对话内核
-    // ============================================================
-    {
-      const body = this.section(containerEl, {
-        title: '对话内核',
-        desc: '选引擎；Grok Build 可接 Grok订阅（官方）或 OpenAI 兼容第三方以省额度。',
-        badge: '3',
-      });
-
-      new Setting(body)
-        .setName('引擎')
-        .setDesc('推荐 Grok Build（本地 ACP）。OpenClaw 为旧 HTTP gateway。')
-        .addDropdown((d) =>
-          d
-            .addOption('grok', 'Grok Build')
-            .addOption('openclaw', 'OpenClaw gateway')
-            .setValue(s.engine || 'grok')
-            .onChange(async (v) => {
-              s.engine = v;
-              this.plugin.invalidateAcp();
-              await this.plugin.saveSettings();
-              this.display(); // re-render engine-specific blocks
-            })
-        );
-
-      if ((s.engine || 'grok') === 'grok') {
-        new Setting(body)
-          .setName('Grok 二进制')
-          .setDesc('桌面端路径，默认 ~/.grok/bin/grok')
-          .addText((t) =>
-            t
-              .setPlaceholder('~/.grok/bin/grok')
-              .setValue(s.grokBin || '')
-              .onChange(async (v) => {
-                s.grokBin = v.trim();
-                this.plugin.invalidateAcp();
-                await this.plugin.saveSettings();
-              })
-          );
-
-        const profiles = normalizeGrokProfiles(s.grokProfiles);
-        s.grokProfiles = profiles;
-
-        new Setting(body)
-          .setName('当前模型配置档')
-          .setDesc(formatGrokRuntimeLabel(this.plugin.getGrokRuntime()))
-          .addDropdown((d) => {
-            for (const p of profiles) {
-              d.addOption(p.id, p.label || p.model || p.id);
-            }
-            d.setValue(s.grokActiveProfile || profiles[0]?.id || 'supergrok');
-            d.onChange(async (v) => {
-              try {
-                await this.plugin.switchGrokProfile(v);
-                this.display();
-              } catch (e) {
-                new Notice(String(e?.message || e));
-              }
-            });
-          });
-
-        new Setting(body)
-          .setName('全局 API Base URL')
-          .setDesc(
-            'OpenAI 兼容根地址，须含 /v1（如 https://www.dmxapi.cn/v1）。只写域名会失败。Grok订阅（官方）档不继承此项。'
-          )
-          .addText((t) =>
-            t
-              .setPlaceholder('https://www.dmxapi.cn/v1')
-              .setValue(s.grokApiBaseUrl || '')
-              .onChange(async (v) => {
-                s.grokApiBaseUrl = v.trim();
-                this.plugin.invalidateAcp();
-                await this.plugin.saveSettings();
-              })
-          );
-
-        new Setting(body)
-          .setName('全局 API Key')
-          .setDesc('仅注入本插件启动的 grok 进程；不改 ~/.grok 登录态')
-          .addText((t) => {
-            t.inputEl.type = 'password';
-            t.setPlaceholder('sk-… / xai-…')
-              .setValue(s.grokApiKey || '')
-              .onChange(async (v) => {
-                s.grokApiKey = v.trim();
-                this.plugin.invalidateAcp();
-                await this.plugin.saveSettings();
-              });
-          });
-
-        // Profiles: collapsed list, open by default if only 1–2
-        const fold = this.fold(body, {
-          title: `模型配置档（${profiles.length}）`,
-          desc: '聊天顶栏可随时切换 · 展开编辑',
-          open: profiles.length <= 2,
-        });
-
-        for (const p of profiles) {
-          const isActive = (s.grokActiveProfile || 'supergrok') === p.id;
-          const box = fold.createDiv({
-            cls: `me-soul-profile-box${isActive ? ' is-active' : ''}`,
-          });
-          const boxHead = box.createDiv({ cls: 'me-soul-profile-head' });
-          boxHead.createEl('h4', { text: p.label || p.id });
-          if (isActive) {
-            boxHead.createSpan({ cls: 'me-soul-settings-badge is-on', text: '使用中' });
-          }
-          if (p.id === 'supergrok') {
-            boxHead.createSpan({
-              cls: 'me-soul-settings-badge is-muted',
-              text: '官方',
-            });
-          }
-
-          new Setting(box)
-            .setName('显示名')
-            .addText((t) =>
-              t.setValue(p.label || '').onChange(async (v) => {
-                p.label = v.trim() || p.id;
-                s.grokProfiles = normalizeGrokProfiles(profiles);
-                await this.plugin.saveSettings();
-              })
-            );
-
-          new Setting(box)
-            .setName('模型 ID')
-            .setDesc('传给 grok -m；第三方需与网关 /v1/models 一致')
-            .addText((t) =>
-              t
-                .setPlaceholder('grok-build / gpt-4o-mini …')
-                .setValue(p.model || '')
-                .onChange(async (v) => {
-                  p.model = v.trim() || 'grok-build';
-                  if (s.grokActiveProfile === p.id) {
-                    s.grokModel = p.model;
-                    this.plugin.invalidateAcp();
-                  }
-                  s.grokProfiles = normalizeGrokProfiles(profiles);
-                  await this.plugin.saveSettings();
-                })
-            );
-
-          new Setting(box)
-            .setName('思考等级')
-            .setDesc('传给 grok --reasoning-effort；模型不支持时自动忽略')
-            .addDropdown((d) => {
-              for (const l of REASONING_EFFORT_LEVELS) {
-                d.addOption(l.value, l.label);
-              }
-              d.setValue(normalizeReasoningEffort(p.reasoningEffort));
-              d.onChange(async (v) => {
-                p.reasoningEffort = normalizeReasoningEffort(v);
-                if (s.grokActiveProfile === p.id) this.plugin.invalidateAcp();
-                s.grokProfiles = normalizeGrokProfiles(profiles);
-                await this.plugin.saveSettings();
-              });
-            });
-
-          new Setting(box)
-            .setName('Base URL 覆盖')
-            .setDesc(
-              p.id === 'supergrok'
-                ? '官方档请留空（用 grok login）'
-                : '留空则用上方全局 Base URL'
-            )
-            .addText((t) =>
-              t
-                .setPlaceholder('https://…/v1')
-                .setValue(p.baseUrl || '')
-                .onChange(async (v) => {
-                  p.baseUrl = v.trim();
-                  if (s.grokActiveProfile === p.id) this.plugin.invalidateAcp();
-                  s.grokProfiles = normalizeGrokProfiles(profiles);
-                  await this.plugin.saveSettings();
-                })
-            );
-
-          new Setting(box)
-            .setName('API Key 覆盖')
-            .setDesc(
-              p.id === 'supergrok' ? '留空用官方登录 / 环境变量' : '留空则用全局 Key'
-            )
-            .addText((t) => {
-              t.inputEl.type = 'password';
-              t.setPlaceholder('可选')
-                .setValue(p.apiKey || '')
-                .onChange(async (v) => {
-                  p.apiKey = v.trim();
-                  if (s.grokActiveProfile === p.id) this.plugin.invalidateAcp();
-                  s.grokProfiles = normalizeGrokProfiles(profiles);
-                  await this.plugin.saveSettings();
-                });
-            });
-
-          if (p.id !== 'supergrok') {
-            new Setting(box).addButton((b) =>
-              b.setButtonText('删除此档').setWarning().onClick(async () => {
-                const next = profiles.filter((x) => x.id !== p.id);
-                s.grokProfiles = normalizeGrokProfiles(next);
-                if (s.grokActiveProfile === p.id) {
-                  s.grokActiveProfile = 'supergrok';
-                  this.plugin.invalidateAcp();
-                }
-                await this.plugin.saveSettings();
-                this.display();
-              })
-            );
-          }
-        }
-
-        new Setting(fold)
-          .setName('添加配置档')
-          .setDesc('第三方便宜模型，侧栏一键切换')
-          .addButton((b) =>
-            b.setButtonText('＋ 添加').onClick(async () => {
-              const id = `p_${Date.now().toString(36)}`;
-              const model = 'gpt-4o-mini';
-              const next = [
-                ...normalizeGrokProfiles(s.grokProfiles),
-                {
-                  id,
-                  label: formatModelDisplayName(model),
-                  model,
-                  baseUrl: s.grokApiBaseUrl || '',
-                  apiKey: '',
-                  reasoningEffort: '',
-                },
-              ];
-              s.grokProfiles = normalizeGrokProfiles(next);
-              await this.plugin.saveSettings();
-              this.display();
-            })
-          );
-      } else {
-        // OpenClaw engine
-        new Setting(body)
-          .setName('Gateway URL')
-          .setDesc('OpenClaw HTTP 入口')
-          .addText((t) =>
-            t
-              .setPlaceholder('http://127.0.0.1:18789')
-              .setValue(s.gatewayUrl || '')
-              .onChange(async (v) => {
-                s.gatewayUrl = v.trim();
-                await this.plugin.saveSettings();
-              })
-          );
-
-        new Setting(body)
-          .setName('Bearer Token')
-          .setDesc('可选')
-          .addText((t) => {
-            t.inputEl.type = 'password';
-            t.setValue(s.token || '').onChange(async (v) => {
-              s.token = v;
-              await this.plugin.saveSettings();
-            });
-          });
-      }
-    }
-
-    // ============================================================
-    // 4. 上下文与 Digest
-    // ============================================================
-    {
-      const body = this.section(containerEl, {
-        title: '上下文与 Digest',
-        desc: '自动附带当前笔记；批量消化时的默认行为。',
-        badge: '4',
-      });
-
-      new Setting(body)
-        .setName('自动附带当前笔记')
-        .setDesc('关闭后完全不注入 active-note')
-        .addToggle((t) =>
-          t.setValue(s.activeNoteContext !== false).onChange(async (v) => {
-            s.activeNoteContext = v;
-            await this.plugin.saveSettings();
-          })
-        );
-
-      new Setting(body)
-        .setName('默认模式')
-        .setDesc('也可在聊天输入栏上方切换')
-        .addDropdown((d) =>
-          d
-            .addOption('follow', '跟随')
-            .addOption('pin', '固定')
-            .addOption('off', '关闭')
-            .setValue(s.activeNoteMode || 'follow')
-            .onChange(async (v) => {
-              s.activeNoteMode = v;
-              await this.plugin.saveSettings();
-            })
-        );
-
-      const advanced = this.fold(body, {
-        title: '高级 · 截断与批量',
-        desc: '字符上限、digest 行为',
-        open: false,
-      });
-
-      new Setting(advanced)
-        .setName('当前笔记最大字符')
-        .setDesc('默认 8000')
-        .addText((t) =>
-          t
-            .setPlaceholder('8000')
-            .setValue(String(s.activeNoteMaxChars ?? 8000))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              s.activeNoteMaxChars = Number.isFinite(n) && n > 500 ? n : 8000;
-              await this.plugin.saveSettings();
-            })
-        );
-
-      new Setting(advanced)
-        .setName('Digest 默认用当前笔记')
-        .setDesc('无 @ 时 /me-digest 使用当前/跟随笔记')
-        .addToggle((t) =>
-          t.setValue(s.activeNoteForDigest !== false).onChange(async (v) => {
-            s.activeNoteForDigest = v;
-            await this.plugin.saveSettings();
-          })
-        );
-
-      new Setting(advanced)
-        .setName('Digest 批量上限')
-        .setDesc('「所有日记」等每轮最多几篇（1–50，默认 8）')
-        .addText((t) =>
-          t
-            .setPlaceholder('8')
-            .setValue(String(s.digestBatchMax ?? 8))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              s.digestBatchMax = Number.isFinite(n) && n > 0 && n <= 50 ? n : 8;
-              await this.plugin.saveSettings();
-            })
-        );
-    }
-
-    // ============================================================
-    // 5. 向量记忆
-    // ============================================================
-    {
-      const body = this.section(containerEl, {
-        title: '向量记忆',
-        desc: 'Wiki 检索只走 embedding（vectors.jsonl）。改模型后请 /memorized。',
-        badge: '5',
-      });
-
-      new Setting(body)
-        .setName('Embed Base URL')
-        .setDesc('OpenAI 兼容，默认 DMX')
-        .addText((t) =>
-          t
-            .setPlaceholder('https://www.dmxapi.cn/v1')
-            .setValue(s.embedBaseUrl || '')
-            .onChange(async (v) => {
-              s.embedBaseUrl = v.trim();
-              await this.plugin.saveSettings();
-            })
-        );
-
-      new Setting(body)
-        .setName('Embed API Key')
-        .setDesc('无 Key 则无法检索 wiki；勿提交 git')
-        .addText((t) => {
-          t.inputEl.type = 'password';
-          t.setPlaceholder('sk-…')
-            .setValue(s.embedApiKey || '')
-            .onChange(async (v) => {
-              s.embedApiKey = v.trim();
-              s.embedEnabled = true;
-              s.retrieveMode = 'vector';
-              await this.plugin.saveSettings();
-            });
-        });
-
-      new Setting(body)
-        .setName('Embed 模型')
-        .setDesc('推荐 bge-m3（中文 · 1024 维）')
-        .addText((t) =>
-          t
-            .setPlaceholder('bge-m3')
-            .setValue(s.embedModel || 'bge-m3')
-            .onChange(async (v) => {
-              s.embedModel = v.trim() || 'bge-m3';
-              await this.plugin.saveSettings();
-            })
-        );
-
-      const embedAdv = this.fold(body, {
-        title: '高级 · 检索阈值',
-        open: false,
-      });
-
-      new Setting(embedAdv)
-        .setName('Top K')
-        .setDesc('每轮注入相关记忆条数')
-        .addText((t) =>
-          t
-            .setPlaceholder('3')
-            .setValue(String(s.embedTopK ?? 3))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              s.embedTopK = Number.isFinite(n) && n > 0 ? n : 3;
-              await this.plugin.saveSettings();
-            })
-        );
-
-      new Setting(embedAdv)
-        .setName('最小余弦相似度')
-        .setDesc('默认 0.28')
-        .addText((t) =>
-          t
-            .setPlaceholder('0.28')
-            .setValue(String(s.embedMinScore ?? 0.28))
-            .onChange(async (v) => {
-              const n = parseFloat(v);
-              s.embedMinScore = Number.isFinite(n) ? n : 0.28;
-              await this.plugin.saveSettings();
-            })
-        );
-    }
-
-    // ============================================================
-    // 6. 语音输入
+    // 3. 语音输入
     // ============================================================
     {
       const body = this.section(containerEl, {
         title: '语音输入',
-        desc: '全屏 Chat 点 🎤 听写；Cmd/Ctrl+Shift+V 进入 Live 边框听麦，说完自动送进命令条（本期文字回复，无 TTS）。Key 可填 xAI，或自动读环境 / OpenClaw / ~/.grok/auth。',
-        badge: '6',
+        desc: 'Cmd/Ctrl+Shift+V 进入 Live 边框听麦，说完自动送进命令条。Key 可填 xAI，或自动读环境变量。',
+        badge: '3',
       });
 
       new Setting(body)

@@ -2,10 +2,10 @@
 
 > **Public beta / 测试版** — not a 1.0 release. APIs and vault layout may change.
 
-**Vault-native agent operating system** for [Obsidian](https://obsidian.md): chat UI, soul loops (thoughts / insights / care), digest + confirm gates, **vector wiki memory**, Grok Build (ACP) or OpenClaw gateway.
+**Vault-native agent operating system** for [Obsidian](https://obsidian.md): an OpenClaw-style chat UI, soul loops (thoughts / insights / care), digest + confirm gates, and **vector wiki memory**. The kernel is a remote [OpenClaw](https://openclaw.ai) gateway reached over Tailscale. The plugin does not bundle or spawn the OpenClaw CLI.
 
 ```
-Vault (Markdown body)  ←→  Obsidian Agent OS (face)  ←→  Grok / OpenClaw (nerve)
+Vault (Markdown body)  ←→  Obsidian Agent OS (face)  ←→  OpenClaw gateway (kernel)
 ```
 
 Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS**.
@@ -39,7 +39,7 @@ Obsidian Agent OS is an independent open-source project and is **not** affiliate
 ## Requirements
 
 - Obsidian **1.5+**
-- Desktop: [Grok Build](https://grok.com) CLI (`~/.grok/bin/grok`) **or** OpenClaw HTTP gateway
+- Desktop or mobile Obsidian, plus an OpenClaw gateway (`ws://127.0.0.1:18789` on the gateway machine; other devices use the tailnet address)
 - **Required for wiki memory:** OpenAI-compatible **embeddings** API (e.g. DMX + `bge-m3`)
 
 ## Install (from source)
@@ -77,7 +77,7 @@ Enable **Obsidian Agent OS** under Obsidian → Settings → Community plugins.
 2. Set agent display name + optional vibe
 3. Seed templates → creates `agent-inbox/soul/*`, home note, wiki folders
 4. Edit `agent-inbox/soul/SOUL.md` / `profile.md` to taste
-5. Settings → engine (Grok / OpenClaw), optional Embed API key
+5. Settings → OpenClaw gateway URL, optional Embed API key
 6. In any note: **Open Agent command bar** (`Mod+Shift+Space`) for rewrite / continue / ask
 7. Optional: open the home note with a ` ```me-soul ` block or ribbon for full chat
 
@@ -111,7 +111,8 @@ npm run build:plugin
 
 ## Versioning
 
-- **0.1.x** — public beta
+- **0.2.0-beta** — OpenClaw gateway kernel, phone chat UI
+- **0.1.x** — public beta on the local Grok / ACP runtime
 - Later: polish, Community Plugin store packaging if/when ready
 
 ## License

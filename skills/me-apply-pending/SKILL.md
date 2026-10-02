@@ -1,6 +1,6 @@
 ---
 name: me-apply-pending
-description: Grok Build 应用已批准的 pending。
+description: OpenClaw 应用已批准的 pending。
 ---
 
 # me-apply-pending

@@ -1,6 +1,6 @@
 ---
 name: me-write-insight
-description: Grok Build 起草心迹草案 + 确认卡（非讨论笔记）。
+description: OpenClaw 起草心迹草案 + 确认卡（非讨论笔记）。
 ---
 
 # me-write-insight

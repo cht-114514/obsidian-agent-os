@@ -1,6 +1,6 @@
 ---
 name: me-soul-promote
-description: Grok Build 清洗 insights/reflections → pending 升格计划 + 确认卡。
+description: OpenClaw 清洗 insights/reflections → pending 升格计划 + 确认卡。
 ---
 
 # me-soul-promote

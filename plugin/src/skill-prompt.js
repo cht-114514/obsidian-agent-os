@@ -9,7 +9,6 @@ export const GROK_SKILL_IDS = new Set([
   'me-reflect-feedback',
   'me-care-check',
   'me-soul-promote',
-  'me-imagine',
   'memorized',
   'me-reindex',
   'me-apply-pending',
@@ -20,7 +19,7 @@ export const GROK_SKILL_IDS = new Set([
 export const FALLBACK_SKILLS = {
   'me-digest': `# me-digest
 
-You are running on Grok Build with vault cwd = Obsidian vault root.
+You are running inside OpenClaw. Read and write the vault only through vault_search, vault_read, vault_list, vault_active_note, and vault_write.
 
 ## Goal
 Compile source note(s) into **pending_review** wiki pages under agent-inbox.
@@ -49,7 +48,7 @@ Accept (plugin) → wiki accepted. Reject → delete wiki.
 
   'me-write-insight': `# me-write-insight
 
-Vault-native skill for Grok Build.
+Vault-native skill for the OpenClaw kernel.
 
 ## Goal
 Draft a 心迹 (insight) about the **user's stable preferences/boundaries**, NOT a discussion of a note.
@@ -152,18 +151,6 @@ Merge an accepted insight into agent-inbox/soul/profile.md (or paths in pending)
 4. Optionally move draft to insights/accepted/.
 `,
 
-  'me-imagine': `# me-imagine
-
-## Goal
-Generate an image with Grok Build native image_gen (or image_edit). Do not curl xAI HTTP yourself.
-
-## Steps
-1. Resolve what to draw from **本会话此前对话** when the user says 该/这个/刚才 — do not search unrelated vault notes if the chat already defined the model.
-2. Craft / use the user's prompt; pick aspect_ratio (default 1:1).
-3. Call image_gen once (or image_edit with a reference).
-4. Tell the user the session-relative path (images/N.jpg). The Obsidian plugin copies into agent-inbox/raw/ and offers 插入当前笔记.
-5. Only write under agent-inbox/ if you copy the file yourself. Never silent-write human zones.
-`,
 };
 
 /**
@@ -197,14 +184,14 @@ export async function loadSkillMarkdown(skillId, readFile) {
  *   conversation?: string,
  * }} args
  */
-export function buildGrokSkillPrompt(args) {
+export function buildSkillPrompt(args) {
   const skillId = args.skillId || 'skill';
   const parts = [];
   parts.push(`# Skill execution: /${skillId}`);
   parts.push('');
-  parts.push('You are Grok Build operating on an Obsidian vault (cwd = vault root).');
-  parts.push('Execute the skill below using your tools (read/search/edit). Prefer agent-inbox/ writes.');
-  parts.push('Human zones (手记/项目库/资料库/基础学科) require user-approved pending — do not write them silently.');
+  parts.push('You are the OpenClaw kernel for an Obsidian vault.');
+  parts.push('Use only the vault tools: vault_search, vault_read, vault_list, vault_active_note, vault_write.');
+  parts.push('vault_write under agent-inbox/ lands immediately. Human zones (手记/项目库/资料库/基础学科) are saved as pending files — do not claim they were written.');
   parts.push('');
   parts.push('## Confirm protocol (required when user must approve)');
   parts.push('Emit Obsidian Agent OS fences the plugin can render:');
@@ -243,7 +230,7 @@ export function buildGrokSkillPrompt(args) {
     parts.push(args.contextBlock);
     parts.push('');
   }
-  parts.push('## User intent');
+  parts.push('## 用户本轮消息');
   parts.push(String(args.userText || '').trim() || `(run /${skillId} with defaults)`);
   return parts.join('\n');
 }
@@ -251,6 +238,8 @@ export function buildGrokSkillPrompt(args) {
 /**
  * @param {string} skillId
  */
+export const buildGrokSkillPrompt = buildSkillPrompt;
+
 export function isGrokSkill(skillId) {
   return GROK_SKILL_IDS.has(skillId);
 }
