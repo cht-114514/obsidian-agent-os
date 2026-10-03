@@ -2,9 +2,9 @@
 
 > **Public beta / 测试版** — not a 1.0 release. APIs and vault layout may change.
 
-**Vault-native agent operating system** for [Obsidian](https://obsidian.md): an OpenClaw-style chat UI, soul loops (thoughts / insights / care), digest + confirm gates, and **vector wiki memory**. The kernel is a remote [OpenClaw](https://openclaw.ai) gateway. The plugin does not bundle or spawn the OpenClaw CLI.
+**Vault-native agent operating system** for [Obsidian](https://obsidian.md): a resident companion and a full-screen chat on one session, soul loops (thoughts / insights / care), digest + confirm gates, and **MemCell memory**. The kernel is a remote [OpenClaw](https://openclaw.ai) gateway. The plugin does not bundle or spawn the OpenClaw CLI.
 
-Two entry points, same kernel:
+Two entry points, same kernel. Companion and full-screen chat share one queue:
 
 ```
 Vault (Markdown body)  ←→  Obsidian Agent OS (face)  ←→  OpenClaw gateway (kernel)
@@ -24,19 +24,19 @@ Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS
 
 | Loop | What it does |
 |------|----------------|
-| **Command bar (primary)** | `Mod+Shift+Space` floating bar; model NL → insert / replace / show |
-| **Full-screen chat** | Ribbon / command → main-tab Claude/ChatGPT-style chat; `@` `/` skills · raw drop |
+| **Companion (primary)** | `Mod+Shift+Space` capsule on the note. The panel uses the same session as full-screen chat. Context is frozen when you send. **插入原位置 / 替换原选区** writes only if that snapshot still matches the note. |
+| **Full-screen chat** | Ribbon / command → main-tab Claude/ChatGPT-style chat; `@` `/` skills · raw drop. Opening it hides the capsule. Sidebar: **删除** then **确认** drops that session on the kernel and locally. |
 | **Feedback** | 👍/👎 toggle/cancel → day log only; **写反馈** → reflect skill + confirm → profile/style |
 | **Digest** | `/me-digest` → wiki under `agent-inbox/wiki/` → confirm card |
 | **Insight (心迹)** | `/me-write-insight` → draft + confirm → profile |
 | **Care (牵挂)** | `/me-care-check` + `cares.md` guardrails |
 | **Thoughts (思绪)** | Short `:::thought` blocks in the UI |
-| **Memory** | MemCell lifecycle: cheap-model formation, scene consolidation, hybrid recall (`vectors.jsonl`) |
+| **Memory** | After each assistant reply, a cheap model cuts a MemCell, files it into a scene, and embeds it. The next turn recalls scenes, recent narrative, facts, unexpired foresight, and wiki vectors. |
 | **Setup wizard** | First run: name your agent, seed **generic** soul templates |
-| **Active note context** | Auto-attach the open Markdown note (follow / pin / off); digest can use it |
-| **Voice input** | Hold 🎤 → xAI STT (stream / REST) fills the composer |
+| **Active note context** | Follow / pin / off. Switching notes updates the companion chip only — it does not send a request. Digest can still use the open note. |
+| **Voice input** | Hold 🎤 → xAI STT (stream / REST) fills the composer. `Mod+Shift+V` is live voice. |
 
-Chat recall uses hybrid MemCell + wiki vectors. Formation defaults to `qwen3.7-flash` with the same Embed API key. `/memorized` still indexes accepted wiki pages.
+Cells, scenes, and the unclosed-turn buffer live under `agent-inbox/wiki/memories/`. Vectors stay in `vectors.jsonl`. Formation defaults to `qwen3.7-flash` and reuses the Embed API key (`memoryLlmApiKey` can override). `/memorized` still indexes accepted wiki pages. Turn settings off under **Settings → 记忆** or **常驻陪伴窗**.
 
 **No author’s personal persona, API keys, or private vault notes are shipped.**  
 You configure identity and keys after install.
@@ -50,7 +50,7 @@ Obsidian Agent OS is an independent open-source project and is **not** affiliate
 
 - Obsidian **1.5+**
 - Desktop or mobile Obsidian, plus an OpenClaw gateway (`ws://127.0.0.1:18789` on the gateway machine; other devices use the tailnet address)
-- **Required for wiki memory:** OpenAI-compatible **embeddings** API (e.g. DMX + `bge-m3`)
+- **Required for chat recall:** OpenAI-compatible **embeddings** API (e.g. DMX + `bge-m3`). MemCell formation uses a cheap chat model on that same key unless you set a separate one.
 
 ## Install (from source)
 
@@ -87,16 +87,16 @@ Enable **Obsidian Agent OS** under Obsidian → Settings → Community plugins.
 2. Set agent display name + optional vibe
 3. Seed templates → creates `agent-inbox/soul/*`, home note, wiki folders
 4. Edit `agent-inbox/soul/SOUL.md` / `profile.md` to taste
-5. Settings → OpenClaw gateway URL, optional Embed API key
-6. In any note: **Open Agent command bar** (`Mod+Shift+Space`) for rewrite / continue / ask
-7. Optional: open the home note with a ` ```me-soul ` block or ribbon for full chat
+5. Settings → OpenClaw gateway URL, Embed API key (recall + formation)
+6. In any note: **Open Agent companion** (`Mod+Shift+Space`). Ask from the note you care about; insert or replace only lands if that note has not changed since send.
+7. Optional: ribbon or **Open Agent full-screen chat** for the same session in a main tab. The home note ` ```me-soul ` block still opens chat.
 
 ### Memory migration (manual, beta)
 
 1. Put existing notes under human zones or `agent-inbox/`
 2. `/me-digest @path` for knowledge wiki
 3. `/me-write-insight …` for stable preferences
-4. `/memorized` after digests (writes vector memory)
+4. `/memorized` after digests (wiki vectors). Chat turns write MemCells on their own while formation is on.
 
 ## Layout
 
@@ -131,8 +131,9 @@ failure behaviour, and how to fall back to the legacy socket.
 
 ## Versioning
 
-- **0.3.x-beta** — durable Mac service: fixed HTTPS entry, device pairing, SQLite turn
-  queue, restart reconciliation, notes + confirmation cards
+- **0.3.x-beta** — durable Mac service (fixed HTTPS, device pairing, SQLite turn
+  queue, restart reconciliation, notes + confirmation cards), a resident companion
+  on the same chat queue, MemCell lifecycle memory, and session delete
 - **0.2.0-beta** — OpenClaw gateway kernel, phone chat UI
 - **0.1.x** — public beta on the local Grok / ACP runtime
 - Later: polish, Community Plugin store packaging if/when ready
