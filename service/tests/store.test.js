@@ -123,6 +123,8 @@ describe('turn store', () => {
     store.upsertSession('agent:main:other', 'main', '另一个会话');
     const row = store.listSessions(50).find((item) => item.key === 'agent:main:other');
     assert.equal(row.label, '另一个会话');
+    assert.equal(store.deleteSession('agent:main:other'), true);
+    assert.equal(store.listSessions(50).some((item) => item.key === 'agent:main:other'), false);
   });
 
   it('survives a reopen with every turn intact', () => {

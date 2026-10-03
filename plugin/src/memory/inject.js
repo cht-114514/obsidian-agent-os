@@ -57,6 +57,13 @@ function escapeReg(s) {
  *   style?: string,
  *   constitution?: string,
  *   retrieved?: { path: string, title?: string, excerpt: string }[],
+ *   memoryRecall?: {
+ *     scenes?: { slug: string, title: string, excerpt: string }[],
+ *     episodes?: { path: string, title?: string, excerpt: string }[],
+ *     facts?: { path: string, title?: string, excerpt: string }[],
+ *     foresight?: { path: string, text: string, start?: string, end?: string }[],
+ *     wiki?: { path: string, title?: string, excerpt: string }[],
+ *   },
  *   conversation?: string,
  *   userMessage: string,
  *   caps?: Partial<typeof DEFAULT_CAPS>,
@@ -96,16 +103,66 @@ export function buildTurnPrompt(pack) {
   parts.push('\n## STYLE\n');
   parts.push(truncateText(pack.style, caps.style) || '（缺失 style.md）');
 
-  const retrieved = pack.retrieved || [];
-  if (retrieved.length) {
-    parts.push('\n## 相关记忆（预检索：向量 embedding）\n');
-    retrieved.slice(0, caps.retrievedMax).forEach((r, i) => {
-      parts.push(
-        `### ${i + 1}. ${r.title || r.path}\n路径：\`${r.path}\`\n\n${truncateText(r.excerpt, caps.retrievedEach)}\n`
-      );
-    });
+  const recall = pack.memoryRecall;
+  const hasRecall =
+    recall &&
+    (recall.scenes?.length ||
+      recall.episodes?.length ||
+      recall.facts?.length ||
+      recall.foresight?.length ||
+      recall.wiki?.length);
+
+  if (hasRecall) {
+    parts.push('\n## 相关记忆（场景 / 事实 / 预判 / 知识）\n');
+    if (recall.scenes?.length) {
+      parts.push('\n### 主题场景\n');
+      recall.scenes.forEach((s, i) => {
+        parts.push(
+          `${i + 1}. **${s.title || s.slug}**\n${truncateText(s.excerpt, caps.retrievedEach)}\n`
+        );
+      });
+    }
+    if (recall.episodes?.length) {
+      parts.push('\n### 近期叙事\n');
+      recall.episodes.forEach((e, i) => {
+        parts.push(
+          `${i + 1}. \`${e.path}\`\n${truncateText(e.excerpt, caps.retrievedEach)}\n`
+        );
+      });
+    }
+    if (recall.facts?.length) {
+      parts.push('\n### 原子事实\n');
+      recall.facts.forEach((f, i) => {
+        parts.push(`${i + 1}. ${truncateText(f.excerpt, 800)}\n`);
+      });
+    }
+    if (recall.foresight?.length) {
+      parts.push('\n### 未过期预判\n');
+      recall.foresight.forEach((f, i) => {
+        const span = f.start || f.end ? `（${f.start || '…'} → ${f.end || '…'}）` : '';
+        parts.push(`${i + 1}. ${f.text}${span}\n`);
+      });
+    }
+    if (recall.wiki?.length) {
+      parts.push('\n### 编译知识（wiki）\n');
+      recall.wiki.forEach((w, i) => {
+        parts.push(
+          `${i + 1}. ${w.title || w.path}\n\`${w.path}\`\n${truncateText(w.excerpt, caps.retrievedEach)}\n`
+        );
+      });
+    }
   } else {
-    parts.push('\n## 相关记忆\n（本轮无检索命中或已跳过）\n');
+    const retrieved = pack.retrieved || [];
+    if (retrieved.length) {
+      parts.push('\n## 相关记忆（预检索：向量 embedding）\n');
+      retrieved.slice(0, caps.retrievedMax).forEach((r, i) => {
+        parts.push(
+          `### ${i + 1}. ${r.title || r.path}\n路径：\`${r.path}\`\n\n${truncateText(r.excerpt, caps.retrievedEach)}\n`
+        );
+      });
+    } else {
+      parts.push('\n## 相关记忆\n（本轮无检索命中或已跳过）\n');
+    }
   }
 
   if (pack.conversation) {

@@ -200,6 +200,7 @@ export function createStore(dbPath) {
     `),
     listSessions: db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?'),
     sessionByKey: db.prepare('SELECT * FROM sessions WHERE key = ?'),
+    deleteSession: db.prepare('DELETE FROM sessions WHERE key = ?'),
     insertDevice: db.prepare(`
       INSERT INTO devices (id, name, platform, secret_hash, created_at, last_seen_at, pairing_code)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -383,6 +384,10 @@ export function createStore(dbPath) {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }));
+    },
+    deleteSession(key) {
+      if (!key) return false;
+      return stmt.deleteSession.run(key).changes > 0;
     },
     // ---- devices ----------------------------------------------------------
     insertDevice(device) {

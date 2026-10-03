@@ -59,11 +59,18 @@ function harness() {
       return { turn: { id: 'turn-1', status: 'queued' } };
     },
   };
+  const deletedKeys = new Set();
   const gateway = {
     isLive: () => true,
     status: () => ({ state: 'live', message: '' }),
     async listSessions() {
-      return [{ key: 'agent:main:main', title: '主会话', updatedAt: 9 }];
+      return [{ key: 'agent:main:main', title: '主会话', updatedAt: 9 }].filter(
+        (row) => !deletedKeys.has(row.key)
+      );
+    },
+    async deleteSession(key) {
+      deletedKeys.add(key);
+      return { deleted: true };
     },
     async history() {
       return {
@@ -243,6 +250,19 @@ describe('service API', { concurrency: 1 }, () => {
     const keys = res.json.sessions.map((row) => row.key);
     assert.ok(keys.includes('agent:main:local'));
     assert.ok(keys.includes('agent:main:main'));
+  });
+
+  it('deletes a session on the kernel and drops the local row', async () => {
+    ctx.store.upsertSession('agent:main:gone', 'main', '要删的');
+    const removed = await call(base, `/v1/sessions/${encodeURIComponent('agent:main:gone')}`, {
+      method: 'DELETE',
+      token: deviceToken,
+    });
+    assert.equal(removed.status, 200);
+    assert.equal(removed.json.ok, true);
+    assert.equal(ctx.store.listSessions(50).some((row) => row.key === 'agent:main:gone'), false);
+    const listed = await call(base, '/v1/sessions', { token: deviceToken });
+    assert.equal(listed.json.sessions.some((row) => row.key === 'agent:main:gone'), false);
   });
 
   it('returns history with internal metadata stripped down', async () => {

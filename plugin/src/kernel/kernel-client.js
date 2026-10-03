@@ -441,6 +441,10 @@ export class KernelClient {
     return Array.isArray(rows) ? rows : [];
   }
 
+  async deleteSession(key) {
+    return this.request('sessions.delete', { key });
+  }
+
   async listModels() {
     const payload = await this.request('models.list', {});
     const rows = payload?.models || payload?.items || [];

@@ -101,6 +101,7 @@ node service/bin/agent-os.mjs revoke <deviceId>
 | POST | `/v1/turns/{id}/cancel` | 用户主动终止 |
 | POST | `/v1/turns/{id}/retry` | 用户确认后重发 |
 | GET | `/v1/sessions` | 会话列表 |
+| DELETE | `/v1/sessions/{key}` | 删除一条会话 |
 | GET | `/v1/sessions/{key}/history` | 历史消息 |
 | GET | `/v1/notes` · `/v1/notes/search` | 笔记列表 / 检索 |
 | GET | `/v1/note` · POST `/v1/note/read` | 读一条笔记（含 sha256 指纹） |

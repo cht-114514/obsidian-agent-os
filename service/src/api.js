@@ -10,6 +10,7 @@
  *   POST   /v1/turns/{id}/retry            explicit re-run after review
  *   GET    /v1/catalog                     models + agents from OpenClaw
  *   GET    /v1/sessions                    session list
+ *   DELETE /v1/sessions/{key}              delete one session
  *   GET    /v1/sessions/{key}/history      message history
  *   GET    /v1/devices                     paired devices (admin)
  *   POST   /v1/devices/{id}/revoke         revoke a device (admin)
@@ -102,6 +103,12 @@ function matchPath(pattern, path) {
     if (want[i] !== got[i]) return null;
   }
   return params;
+}
+
+function previewOf(row) {
+  const raw = row?.lastMessagePreview || row?.preview || row?.lastMessage || '';
+  const text = typeof raw === 'string' ? raw : raw?.text || '';
+  return String(text).replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
 export function createApi(deps) {
@@ -417,7 +424,9 @@ export function createApi(deps) {
         const prev = merged.get(key) || {};
         merged.set(key, {
           key,
-          label: row.label || row.title || prev.label || '',
+          label: row.derivedTitle || row.displayName || row.label || row.title || prev.label || '',
+          preview: previewOf(row) || prev.preview || '',
+          lastMessagePreview: previewOf(row) || prev.lastMessagePreview || '',
           agentId: row.agentId || prev.agentId || agentId,
           updatedAt: row.updatedAt || prev.updatedAt || 0,
         });
@@ -444,6 +453,34 @@ export function createApi(deps) {
       } catch (error) {
         sendJson(res, 503, errorBody('KERNEL_UNAVAILABLE', error?.message || 'OpenClaw 不可用'));
       }
+      return;
+    }
+
+    const sessionMatch = matchPath('/v1/sessions/:key', path);
+    if (sessionMatch && method === 'DELETE') {
+      const device = requireDevice(req, res);
+      if (!device) return;
+      const key = sessionMatch.key || '';
+      if (!key) {
+        sendJson(res, 400, errorBody('BAD_REQUEST', '缺少会话'));
+        return;
+      }
+      if (!gateway.isLive?.()) {
+        sendJson(res, 503, errorBody('KERNEL_UNAVAILABLE', 'Mac 上的 OpenClaw 没连上，这条会话先留着'));
+        return;
+      }
+      try {
+        await gateway.deleteSession(key);
+      } catch (error) {
+        const msg = String(error?.message || '');
+        const missing = error?.code === 'NOT_FOUND' || /not found|unknown session|no such session/i.test(msg);
+        if (!missing) {
+          sendJson(res, 503, errorBody('KERNEL_UNAVAILABLE', error?.message || '删不掉这条会话'));
+          return;
+        }
+      }
+      store.deleteSession?.(key);
+      sendJson(res, 200, { ok: true, key });
       return;
     }
 

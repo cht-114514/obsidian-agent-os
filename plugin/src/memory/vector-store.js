@@ -195,6 +195,7 @@ export function buildRowsForFile(args) {
     if (!emb?.length) continue;
     rows.push({
       id: `${path}#${c.index}`,
+      kind: 'wiki',
       path,
       title: title || path,
       chunkIndex: c.index,

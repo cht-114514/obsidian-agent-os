@@ -1,7 +1,7 @@
 /**
- * Legacy keyword helpers (parse/score). Runtime wiki memory is vector-only
- * via index-ops.retrieveRelevantMemory → vectors.jsonl. Kept for unit tests
- * and optional offline tooling.
+ * Keyword tokenize/score helpers for hybrid recall (facts) and offline index tooling.
+ * Runtime prompt injection uses index-ops.recallMemory → vectors.jsonl + MemCell rows.
+ * wiki/index.md keyword index is deprecated (removed on /memorized).
  */
 
 /**

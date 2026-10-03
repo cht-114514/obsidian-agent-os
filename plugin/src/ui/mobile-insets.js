@@ -1,20 +1,13 @@
 /**
- * Mobile keyboard inset: prefer Obsidian --keyboard-height; fall back to visualViewport
- * only when the shrink is clearly larger than the home-indicator safe area.
+ * Mobile keyboard inset: with visualViewport, track the live gap each frame.
+ * --keyboard-height is only used when visualViewport is unavailable.
  * @param {CSSStyleDeclaration} bodyStyle
  * @param {VisualViewport|null} viewport
  * @param {number} innerHeight
  * @returns {number}
  */
-export function resolveMobileKeyboardPx(bodyStyle, viewport, innerHeight) {
-  try {
-    const raw = bodyStyle.getPropertyValue('--keyboard-height').trim();
-    const parsed = parseFloat(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.round(parsed);
-  } catch {
-    /* ignore */
-  }
-  if (!viewport) return 0;
+export function resolveMobileKeyboardPx(bodyStyle, viewport, innerHeight, opts = {}) {
+  const focused = opts.focused !== false;
   let safeBottom = 0;
   try {
     const safeRaw = bodyStyle.getPropertyValue('--safe-area-inset-bottom').trim();
@@ -23,10 +16,25 @@ export function resolveMobileKeyboardPx(bodyStyle, viewport, innerHeight) {
   } catch {
     /* ignore */
   }
-  const gap = Math.max(0, innerHeight - viewport.height - viewport.offsetTop);
   const threshold = Math.max(80, safeBottom + 48);
-  if (gap <= threshold) return 0;
-  return Math.round(gap);
+
+  if (viewport && innerHeight) {
+    const gap = Math.max(0, innerHeight - viewport.height - (viewport.offsetTop || 0));
+    if (gap <= threshold) return 0;
+    return Math.round(gap);
+  }
+
+  let css = 0;
+  try {
+    const raw = bodyStyle.getPropertyValue('--keyboard-height').trim();
+    const parsed = parseFloat(raw);
+    if (Number.isFinite(parsed) && parsed > 0) css = Math.round(parsed);
+  } catch {
+    /* ignore */
+  }
+  if (!focused) return 0;
+  if (css > 0) return css;
+  return 0;
 }
 
 /**

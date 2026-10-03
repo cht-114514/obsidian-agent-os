@@ -17,10 +17,11 @@ export function isUserSession(row) {
 
 export function sessionLabel(row) {
   const named = row?.displayName || row?.label || row?.title || row?.derivedTitle;
-  if (named && named !== row?.key) return String(named);
+  if (named && named !== row?.key && named !== '新会话') return String(named);
+  const preview = sessionPreview(row);
+  if (preview && !/^\[?openclaw heartbeat/i.test(preview)) return preview.slice(0, 28);
   const key = sessionKey(row);
   if (row?.isMain || key.endsWith(':main')) return '主会话';
-  if (key.includes(':aos-')) return '新会话';
   return '会话';
 }
 
@@ -67,7 +68,7 @@ export function groupSessions(sessions, opts = {}) {
 
 /**
  * @param {HTMLElement} el
- * @param {{ onNew: () => void, onSelect: (key: string) => void, onBack?: () => void }} handlers
+ * @param {{ onNew: () => void, onSelect: (key: string) => void, onDelete?: (key: string) => void, onBack?: () => void }} handlers
  */
 export function mountSidebar(el, handlers) {
   el.empty();
@@ -98,8 +99,10 @@ export function mountSidebar(el, handlers) {
   }).onclick = () => handlers.onBack?.();
   let query = '';
   let last = null;
+  let armedKey = '';
   search.addEventListener('input', () => {
     query = search.value || '';
+    armedKey = '';
     if (last) paint(last);
   });
 
@@ -116,11 +119,13 @@ export function mountSidebar(el, handlers) {
     list.empty();
     const groups = groupSessions(state.sessions, { query, now: state.now });
     if (!groups.length) {
-      const text = state.syncHint
-        ? '会话列表没有加载出来'
-        : query
-          ? '没有匹配的会话'
-          : '还没有会话';
+      const text = state.sessionsLoading
+        ? '正在读取会话'
+        : state.syncHint
+          ? '会话列表没有加载出来'
+          : query
+            ? '没有匹配的会话'
+            : '还没有会话';
       list.createDiv({ cls: 'aos-session-empty', text });
       return;
     }
@@ -128,21 +133,40 @@ export function mountSidebar(el, handlers) {
       list.createDiv({ cls: 'aos-session-label', text: title });
       for (const row of rows) {
         const key = sessionKey(row);
-        const button = list.createEl('button', {
+        const item = list.createDiv({
           cls: `aos-session${key === state.activeKey ? ' is-active' : ''}`,
-          attr: { type: 'button' },
         });
-        const copy = button.createDiv({ cls: 'aos-session-copy' });
+        const copy = item.createDiv({ cls: 'aos-session-copy' });
         copy.createDiv({ cls: 'aos-session-title', text: sessionLabel(row) });
         const preview = sessionPreview(row);
-        if (preview) copy.createDiv({ cls: 'aos-session-preview', text: preview });
-        const meta = button.createDiv({ cls: 'aos-session-meta' });
+        const title = sessionLabel(row);
+        if (preview && preview !== title && !title.startsWith(preview.slice(0, 12))) {
+          copy.createDiv({ cls: 'aos-session-preview', text: preview });
+        }
+        const meta = item.createDiv({ cls: 'aos-session-meta' });
         const when = formatRelativeTime(sessionTime(row), state.now);
         if (when) meta.createSpan({ text: when });
         if (row.active || row.hasActiveRun || row.needsAttention) meta.createSpan({ cls: 'aos-session-dot' });
-        button.addEventListener('click', (event) => {
+        const armed = armedKey === key;
+        const remove = item.createEl('button', {
+          cls: `aos-session-delete${armed ? ' is-armed' : ''}`,
+          text: armed ? '确认' : '删除',
+          attr: { type: 'button', 'aria-label': armed ? '确认删除会话' : '删除会话' },
+        });
+        remove.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
+          if (armedKey !== key) {
+            armedKey = key;
+            paint(state);
+            return;
+          }
+          armedKey = '';
+          handlers.onDelete?.(key);
+        });
+        item.addEventListener('click', (event) => {
+          if (event.target?.closest?.('.aos-session-delete')) return;
+          armedKey = '';
           handlers.onSelect(key);
         });
       }

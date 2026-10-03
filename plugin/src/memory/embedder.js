@@ -101,5 +101,4 @@ export const DEFAULT_EMBED_SETTINGS = {
   embedModel: 'bge-m3',
   embedTopK: 3,
   embedMinScore: 0.28,
-  retrieveMode: 'vector', // keyword index removed; vector only
 };

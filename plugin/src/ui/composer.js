@@ -134,8 +134,7 @@ export function mountComposer(el, opts) {
     text: '+',
     attr: { type: 'button', 'aria-label': '新会话' },
   });
-  if (opts.mobile) plus.hidden = true;
-  plus.hidden = true;
+  plus.remove();
   const ring = bar.createEl('button', {
     cls: 'aos-ring',
     attr: { type: 'button', 'aria-label': '上下文用量' },
@@ -477,7 +476,6 @@ export function mountComposer(el, opts) {
     else if (next === 'send') submit();
   });
   bindTap(progressStop, () => opts.onAbort?.());
-  bindTap(plus, () => opts.onNew?.());
   bindTap(chip, () => openPicker());
 
   paintAction();

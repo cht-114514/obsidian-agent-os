@@ -270,6 +270,13 @@ export function createServiceClient(opts) {
 
     listSessions: () => request('/v1/sessions', { timeout: 15000 }),
 
+    deleteSession(sessionKey) {
+      return request(`/v1/sessions/${encodeURIComponent(sessionKey)}`, {
+        method: 'DELETE',
+        timeout: 15000,
+      });
+    },
+
     history(sessionKey, limit = 60) {
       return request(`/v1/sessions/${encodeURIComponent(sessionKey)}/history?limit=${limit}`, {
         timeout: 20000,

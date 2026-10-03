@@ -31,12 +31,12 @@ Formerly prototyped as “Me.Soul”. Public project name is **Obsidian Agent OS
 | **Insight (心迹)** | `/me-write-insight` → draft + confirm → profile |
 | **Care (牵挂)** | `/me-care-check` + `cares.md` guardrails |
 | **Thoughts (思绪)** | Short `:::thought` blocks in the UI |
-| **Memory** | **Vector-only** wiki memory (`vectors.jsonl` + embed API; keyword index removed) |
+| **Memory** | MemCell lifecycle: cheap-model formation, scene consolidation, hybrid recall (`vectors.jsonl`) |
 | **Setup wizard** | First run: name your agent, seed **generic** soul templates |
 | **Active note context** | Auto-attach the open Markdown note (follow / pin / off); digest can use it |
 | **Voice input** | Hold 🎤 → xAI STT (stream / REST) fills the composer |
 
-Wiki **相关记忆** is pure embedding retrieval. Configure Embed API Key, then `/memorized`.
+Chat recall uses hybrid MemCell + wiki vectors. Formation defaults to `qwen3.7-flash` with the same Embed API key. `/memorized` still indexes accepted wiki pages.
 
 **No author’s personal persona, API keys, or private vault notes are shipped.**  
 You configure identity and keys after install.

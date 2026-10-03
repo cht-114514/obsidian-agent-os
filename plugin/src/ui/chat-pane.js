@@ -1,6 +1,7 @@
 import { renderWorkRun } from './work-run.js';
 import { renderMessageBody } from './message-body.js';
 import { formatRelativeTime, textOfMessage } from './turns.js';
+import { parseApplyResponse } from '../intent.js';
 
 export { textOfMessage };
 
@@ -83,6 +84,7 @@ export function mountChatPane(el, deps) {
     const discard = pending.createEl('button', { text: '忽略', attr: { type: 'button' } });
     discard.onclick = () => deps.onPendingAction?.(message, 'discard');
     const note = msg.createDiv({ cls: 'aos-pending-note' });
+    const applyRow = role === 'assistant' ? actions.createDiv({ cls: 'aos-apply-actions' }) : null;
     time.onclick = () => foot.toggleClass('is-open', !foot.hasClass('is-open'));
     const node = {
       group,
@@ -93,6 +95,7 @@ export function mountChatPane(el, deps) {
       regen,
       pending,
       note,
+      applyRow,
       text: '',
       done: false,
       gen: 0,
@@ -156,6 +159,25 @@ export function mountChatPane(el, deps) {
         node.text = text;
       }
       return;
+    }
+    if (node.applyRow && deps.onCompanionApply) {
+      node.applyRow.empty();
+      if (!message.streaming && text) {
+        const parsed = parseApplyResponse(text);
+        if (parsed.mode === 'insert_at_cursor') {
+          const btn = node.applyRow.createEl('button', {
+            text: '插入原位置',
+            attr: { type: 'button' },
+          });
+          btn.onclick = () => deps.onCompanionApply(message, 'insert');
+        } else if (parsed.mode === 'replace_selection') {
+          const btn = node.applyRow.createEl('button', {
+            text: '替换原选区',
+            attr: { type: 'button' },
+          });
+          btn.onclick = () => deps.onCompanionApply(message, 'replace');
+        }
+      }
     }
     const textChanged = node.text !== text || node.done === !!message.streaming;
     if (!textChanged) return;

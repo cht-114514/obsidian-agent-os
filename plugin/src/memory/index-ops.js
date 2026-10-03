@@ -10,10 +10,14 @@ import {
   serializeVectorsJsonl,
   upsertPath,
   removePath,
-  searchVectors,
   buildRowsForFile,
   planChunkEmbeds,
 } from './vector-store.js';
+import {
+  recallFromRows,
+  attachForesightFromCells,
+  emptyRecallPack,
+} from './recall-pack.js';
 
 /**
  * @param {any} app
@@ -96,7 +100,6 @@ export function embedConfigFromPlugin(plugin) {
     embedModel: s.embedModel || DEFAULT_EMBED_SETTINGS.embedModel,
     embedTopK: s.embedTopK ?? DEFAULT_EMBED_SETTINGS.embedTopK,
     embedMinScore: s.embedMinScore ?? DEFAULT_EMBED_SETTINGS.embedMinScore,
-    retrieveMode: 'vector',
   };
 }
 
@@ -221,28 +224,22 @@ export async function reindexAllVectors(app, plugin, files) {
 }
 
 /**
- * Pure vector retrieval for prompt injection (embedding required).
+ * EverMemOS-style hybrid recall for prompt injection.
  * @param {any} app
  * @param {any} plugin
  * @param {string} query
- * @returns {Promise<{ path: string, title?: string, excerpt: string, score?: number, source?: string }[]>}
  */
-export async function retrieveRelevantMemory(app, plugin, query) {
+export async function recallMemory(app, plugin, query) {
   const cfg = embedConfigFromPlugin(plugin);
-  const topK = cfg.embedTopK ?? 3;
-
-  if (!cfg.embedApiKey) {
-    console.warn('retrieveRelevantMemory: no embed API key — skip vector memory');
-    return [];
-  }
-
+  cfg.wikiTopK = 2;
   const q = String(query || '').trim();
-  if (!q) return [];
+  if (!q) return emptyRecallPack();
+  if (!cfg.embedApiKey) return emptyRecallPack();
 
   try {
     const rows = await loadVectorRows(app);
     const usable = rows.filter((r) => r.model === cfg.embedModel && Array.isArray(r.embedding));
-    if (!usable.length) return [];
+    if (!usable.length) return emptyRecallPack();
 
     const [qVec] = await embedTexts({
       baseUrl: cfg.embedBaseUrl,
@@ -250,38 +247,23 @@ export async function retrieveRelevantMemory(app, plugin, query) {
       model: cfg.embedModel,
       texts: [q],
     });
-    if (!qVec?.length) return [];
+    if (!qVec?.length) return emptyRecallPack();
 
-    const hits = searchVectors(usable, qVec, {
-      topK,
-      minScore: cfg.embedMinScore,
-      model: cfg.embedModel,
-    });
-
-    // Prefer live wiki file excerpt when path still exists; else chunk text
-    const out = [];
-    for (const h of hits) {
-      const path = h.row.path;
-      let excerpt = (h.row.text || '').slice(0, 1500);
-      try {
-        const md = await vaultRead(app, path);
-        if (md) {
-          excerpt = md.replace(/^---[\s\S]*?---\n/, '').slice(0, 1500);
-        }
-      } catch {
-        /* keep chunk text */
-      }
-      out.push({
-        path,
-        title: h.row.title || path,
-        excerpt,
-        score: h.score,
-        source: 'vector',
-      });
+    let pack = recallFromRows(usable, q, qVec, cfg);
+    const cellPaths = new Set([
+      ...pack.episodes.map((e) => e.path),
+      ...pack.facts.map((f) => f.path),
+    ]);
+    /** @type {Record<string, string>} */
+    const bodies = {};
+    for (const p of cellPaths) {
+      const md = await vaultRead(app, p);
+      if (md) bodies[p] = md;
     }
-    return out;
+    pack = attachForesightFromCells(pack, bodies);
+    return pack;
   } catch (e) {
-    console.warn('vector retrieve failed', e);
-    return [];
+    console.warn('recallMemory failed', e);
+    return emptyRecallPack();
   }
 }

@@ -15,7 +15,8 @@ import {
   finishRenderMath,
 } from 'obsidian';
 import { mountMeSoulChat } from './chat-panel.js';
-import { createCommandBarController } from './command-bar.js';
+import { createChatController } from './kernel/chat-controller.js';
+import { createCompanionController } from './ui/companion/shell.js';
 import { createVoiceLiveController } from './voice-live.js';
 import { KernelClient, resolveThinking, thinkingLevelsOf } from './kernel/kernel-client.js';
 import { VaultNode } from './kernel/vault-node.js';
@@ -105,42 +106,53 @@ export default class MeSoulPlugin extends Plugin {
     this.kernelModels = [];
     /** @type {{ skillId: string, text?: string, autoSend?: boolean } | null} */
     this._pendingChatLaunch = null;
-    this.commandBar = createCommandBarController(this.app, this, {
-      Notice,
-      MarkdownRenderer,
-      loadMathJax,
-      renderMath,
-      finishRenderMath,
-    });
-    this.voiceLive = createVoiceLiveController(this.app, this, {
-      Notice,
-      getCommandBar: () => this.commandBar,
-    });
+    this.registerView(VIEW_TYPE, (leaf) => new MeSoulView(leaf, this));
+
+    try {
+      this.chatController = createChatController(this, this.app, { Notice });
+    } catch (error) {
+      console.error('Agent OS chat controller failed to start', error);
+      new Notice('Agent OS 会话没有启动，全屏对话暂时不可用');
+    }
+    try {
+      this.companion = createCompanionController(this.app, this, {
+        Notice,
+        MarkdownRenderer,
+        loadMathJax,
+        renderMath,
+        finishRenderMath,
+      });
+      this.voiceLive = createVoiceLiveController(this.app, this, {
+        Notice,
+        getCommandBar: () => this.companion,
+      });
+    } catch (error) {
+      console.error('Agent OS companion failed to start', error);
+    }
 
     document.body.classList.add('me-soul-plugin-loaded');
     this.register(() => document.body.classList.remove('me-soul-plugin-loaded'));
     this.register(() => {
       this.voiceLive?.destroy?.();
       this.voiceLive = null;
-      this.commandBar?.destroy?.();
-      this.commandBar = null;
+      this.companion?.destroy?.();
+      this.companion = null;
+      this.chatController = null;
     });
-
-    this.registerView(VIEW_TYPE, (leaf) => new MeSoulView(leaf, this));
 
     this.addRibbonIcon('sparkles', 'Agent 全屏对话', () => this.activateView());
 
-    // Primary: IDE command bar (inline, on the note)
+    // Resident companion (replaces command bar)
     this.addCommand({
       id: 'obsidian-agent-os-command-bar',
-      name: 'Open Agent command bar',
+      name: 'Open Agent companion',
       hotkeys: [{ modifiers: ['Mod', 'Shift'], key: ' ' }],
-      callback: () => this.commandBar?.toggle(),
+      callback: () => this.companion?.toggle(),
     });
     this.addCommand({
       id: 'obsidian-agent-os-command-bar-open',
-      name: 'Open Agent command bar (force open)',
-      callback: () => this.commandBar?.open({ forceOpen: true }),
+      name: 'Open Agent companion (force open)',
+      callback: () => this.companion?.open({ forceOpen: true }),
     });
 
     // Live voice shell: border listen → hand off to command bar (text reply)
@@ -165,19 +177,17 @@ export default class MeSoulPlugin extends Plugin {
         const sel = editor?.getSelection?.() || '';
         menu.addItem((item) => {
           item
-            .setTitle(sel ? '用 Agent 处理选区…' : '打开 Agent 命令条…')
+            .setTitle(sel ? '用 Agent 处理选区…' : '打开 Agent 陪伴窗…')
             .setIcon('sparkles')
             .onClick(() => {
-              this.commandBar?.open({ forceOpen: true });
+              this.companion?.open({ forceOpen: true });
             });
         });
       })
     );
 
-    // Optional floating chip near selection (Phase 1.5)
-    this._setupSelectionChip();
-
     this.addSettingTab(new MeSoulSettingTab(this.app, this));
+    this.register(() => this.companion?.destroy?.());
 
     this.register(() => {
       this.acp?.stop?.();
@@ -233,97 +243,21 @@ export default class MeSoulPlugin extends Plugin {
    * them are nudged; the per-turn resume guard prevents double polling.
    */
   recoverChatViews() {
+    this.chatController?.recoverFromBackground?.().catch(() => {});
     for (const leaf of this.app?.workspace?.getLeavesOfType?.(VIEW_TYPE) || []) {
       leaf.view?.recover?.();
     }
   }
 
-  /**
-   * Lightweight "✦" chip near selection — opens command bar.
-   * Disabled when settings.commandBarSelectionChip === false.
-   */
-  _setupSelectionChip() {
-    /** @type {HTMLElement | null} */
-    let chip = null;
-    let hideTimer = null;
+  ensureChatController() {
+    if (!this.chatController) {
+      this.chatController = createChatController(this, this.app, { Notice });
+    }
+    return this.chatController;
+  }
 
-    const removeChip = () => {
-      if (hideTimer) {
-        clearTimeout(hideTimer);
-        hideTimer = null;
-      }
-      if (chip) {
-        chip.remove();
-        chip = null;
-      }
-    };
-
-    const placeChip = () => {
-      if (this.settings.commandBarEnabled === false) {
-        removeChip();
-        return;
-      }
-      if (this.settings.commandBarSelectionChip === false) {
-        removeChip();
-        return;
-      }
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (!view?.editor) {
-        removeChip();
-        return;
-      }
-      const sel = view.editor.getSelection();
-      if (!sel || !sel.trim()) {
-        removeChip();
-        return;
-      }
-      // Avoid overlapping command bar
-      if (this.commandBar?.isOpen?.()) {
-        removeChip();
-        return;
-      }
-
-      let top = 72;
-      let left = 24;
-      try {
-        const sel = window.getSelection?.();
-        if (sel && sel.rangeCount > 0) {
-          const rect = sel.getRangeAt(0).getBoundingClientRect();
-          if (rect && (rect.width || rect.height)) {
-            top = Math.max(8, rect.top - 36);
-            left = Math.max(8, rect.left);
-          }
-        }
-      } catch {
-        /* keep defaults */
-      }
-
-      if (!chip) {
-        chip = document.body.createDiv({ cls: 'me-soul-sel-chip' });
-        chip.setAttr('title', '用 Agent 处理选区');
-        chip.setText('✦');
-        chip.onclick = (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          removeChip();
-          this.commandBar?.open({ forceOpen: true });
-        };
-      }
-
-      chip.style.top = `${top}px`;
-      chip.style.left = `${left}px`;
-      chip.style.right = 'auto';
-      chip.addClass('is-visible');
-    };
-
-    const schedulePlace = () => {
-      if (hideTimer) clearTimeout(hideTimer);
-      hideTimer = setTimeout(placeChip, 180);
-    };
-
-    this.registerDomEvent(document, 'selectionchange', schedulePlace);
-    this.registerEvent(this.app.workspace.on('active-leaf-change', removeChip));
-    this.register(() => removeChip());
+  isChatViewActive() {
+    return this.isChatLeafActive?.() || false;
   }
 
   isDesktopKernelAvailable() {
@@ -885,7 +819,11 @@ export default class MeSoulPlugin extends Plugin {
         embedModel: 'bge-m3',
         embedTopK: 3,
         embedMinScore: 0.28,
-        retrieveMode: 'vector',
+        memoryFormationEnabled: true,
+        memoryLlmBaseUrl: '',
+        memoryLlmApiKey: '',
+        memoryLlmModel: 'qwen3.7-flash',
+        memorySceneThreshold: 0.72,
         // xAI voice STT
         voiceEnabled: true,
         voiceLanguage: '', // empty = auto; e.g. en, zh if supported
@@ -1270,18 +1208,18 @@ class MeSoulSettingTab extends PluginSettingTab {
     }
 
     // ============================================================
-    // 2. 命令条
+    // 2. 陪伴窗
     // ============================================================
     {
       const body = this.section(containerEl, {
-        title: '命令条',
-        desc: '笔记里的悬浮入口，不是主界面。',
+        title: '陪伴窗',
+        desc: '笔记内常驻胶囊与浮窗，与全屏对话共用会话。',
         badge: '2',
       });
 
       new Setting(body)
-        .setName('命令条')
-        .setDesc('快捷键 Mod+Shift+Space，在笔记里改写或提问。')
+        .setName('常驻陪伴窗')
+        .setDesc('关闭后隐藏胶囊；快捷键 Mod+Shift+Space 也不再打开。')
         .addToggle((t) =>
           t.setValue(s.commandBarEnabled !== false).onChange(async (v) => {
             s.commandBarEnabled = v;
@@ -1289,31 +1227,121 @@ class MeSoulSettingTab extends PluginSettingTab {
           })
         )
         .addButton((b) =>
-          b.setButtonText('打开命令条').onClick(() => {
-            this.plugin.commandBar?.open({ forceOpen: true });
+          b.setButtonText('打开陪伴窗').onClick(() => {
+            this.plugin.companion?.open({ forceOpen: true });
           })
         );
+    }
+
+    // ============================================================
+    // 3. 记忆（MemCell + 向量召回）
+    // ============================================================
+    {
+      const body = this.section(containerEl, {
+        title: '记忆',
+        desc: '每轮用便宜模型切 MemCell；对话前混合召回场景/事实/wiki。向量 Key 必填才有召回。',
+        badge: '3',
+      });
 
       new Setting(body)
-        .setName('选区浮动按钮 ✦')
-        .setDesc('选中文字后显示轻量按钮，点击打开命令条')
+        .setName('对话前召回')
+        .setDesc('关闭则只注入 Soul 包，不检索 vectors.jsonl')
         .addToggle((t) =>
-          t.setValue(s.commandBarSelectionChip !== false).onChange(async (v) => {
-            s.commandBarSelectionChip = v;
+          t.setValue(s.retrieve !== false).onChange(async (v) => {
+            s.retrieve = v;
             await this.plugin.saveSettings();
           })
         );
 
+      new Setting(body)
+        .setName('Embed API Key')
+        .setDesc('OpenAI 兼容 embeddings（如 bge-m3）')
+        .addText((t) => {
+          t.inputEl.type = 'password';
+          t
+            .setPlaceholder('sk-…')
+            .setValue(s.embedApiKey || '')
+            .onChange(async (v) => {
+              s.embedApiKey = v.trim();
+              await this.plugin.saveSettings();
+            });
+        });
+
+      new Setting(body)
+        .setName('Embed 接口 / 模型')
+        .setDesc('默认 DMX + bge-m3')
+        .addText((t) =>
+          t
+            .setPlaceholder('https://www.dmxapi.cn/v1')
+            .setValue(s.embedBaseUrl || '')
+            .onChange(async (v) => {
+              s.embedBaseUrl = v.trim() || 'https://www.dmxapi.cn/v1';
+              await this.plugin.saveSettings();
+            })
+        )
+        .addText((t) =>
+          t
+            .setPlaceholder('bge-m3')
+            .setValue(s.embedModel || 'bge-m3')
+            .onChange(async (v) => {
+              s.embedModel = v.trim() || 'bge-m3';
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(body)
+        .setName('每轮 MemCell 形成')
+        .setDesc('助手回复后异步调用便宜 chat 模型做话题边界检测')
+        .addToggle((t) =>
+          t.setValue(s.memoryFormationEnabled !== false).onChange(async (v) => {
+            s.memoryFormationEnabled = v;
+            await this.plugin.saveSettings();
+          })
+        );
+
+      new Setting(body)
+        .setName('形成用接口 / 模型')
+        .setDesc('Key 与上方 Embed 相同（可单独填 memoryLlmApiKey 覆盖）。默认 qwen3.7-flash')
+        .addText((t) =>
+          t
+            .setPlaceholder('https://www.dmxapi.cn/v1')
+            .setValue(s.memoryLlmBaseUrl || '')
+            .onChange(async (v) => {
+              s.memoryLlmBaseUrl = v.trim();
+              await this.plugin.saveSettings();
+            })
+        )
+        .addText((t) =>
+          t
+            .setPlaceholder('qwen3.7-flash')
+            .setValue(s.memoryLlmModel || 'qwen3.7-flash')
+            .onChange(async (v) => {
+              s.memoryLlmModel = v.trim() || 'qwen3.7-flash';
+              await this.plugin.saveSettings();
+            })
+        );
+
+      const memAdv = this.fold(body, { title: '高级 · 形成用 Key 覆盖', open: false });
+      new Setting(memAdv)
+        .setName('形成用 Key（可选）')
+        .setDesc('留空则使用 Embed API Key')
+        .addText((t) => {
+          t.inputEl.type = 'password';
+          t.setValue(s.memoryLlmApiKey || '').onChange(async (v) => {
+            s.memoryLlmApiKey = v.trim();
+            await this.plugin.saveSettings();
+          });
+        });
     }
 
     // ============================================================
-    // 3. 语音输入
+    // 4. 语音输入
     // ============================================================
     {
       const body = this.section(containerEl, {
         title: '语音输入',
         desc: 'Cmd/Ctrl+Shift+V 进入 Live 边框听麦，说完自动送进命令条。Key 可填 xAI，或自动读环境变量。',
-        badge: '3',
+        badge: '4',
       });
 
       new Setting(body)

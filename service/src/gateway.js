@@ -133,6 +133,9 @@ export function createGateway(opts) {
     request,
     health: () => request('health', {}, 8000),
     listSessions: () => client.listSessions(),
+    deleteSession(sessionKey) {
+      return request('sessions.delete', { key: sessionKey }, 15000);
+    },
     listModels: () => client.listModels(),
     listAgents: () => client.listAgents(),
     async catalog() {
